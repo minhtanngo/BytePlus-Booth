@@ -589,6 +589,19 @@ def fmt_clock(ts: float | None) -> str:
     return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
 
 
+def normalize_snap(snap: dict) -> dict:
+    """Backfill timing keys so the UI never KeyErrors on a snapshot produced
+    by an older code version still cached in st.cache_resource (e.g. a job
+    created before a hot redeploy). Safe no-op for fresh jobs."""
+    snap.setdefault("elapsed", 0.0)
+    snap.setdefault("queue_wait", 0.0)
+    snap.setdefault("total_elapsed", snap.get("elapsed", 0.0))
+    snap.setdefault("created_at", None)
+    snap.setdefault("started_at", None)
+    snap.setdefault("finished_at", None)
+    return snap
+
+
 # ──────────────────────────────────────────────────────────
 # SEEDANCE / TOS  (usage UNCHANGED)
 # ──────────────────────────────────────────────────────────
@@ -1598,7 +1611,7 @@ def render_generating():
             _reset_session()
         return
 
-    snap = job.snapshot()
+    snap = normalize_snap(job.snapshot())
     theme = THEMES.get(snap["theme_id"], {})
     sig = theme.get("signature", BP_BLUE)
 
@@ -1721,7 +1734,7 @@ def render_result():
             _reset_session()
         return
 
-    snap = job.snapshot()
+    snap = normalize_snap(job.snapshot())
     theme = THEMES.get(snap["theme_id"], {})
     name = snap["customer_name"] or "Your"
     poss = f"{name}'s" if not name.endswith("s") else f"{name}'"
