@@ -6,7 +6,7 @@
  FLOW:
    1. Upload OR take a photo (one portrait — any gender works).
    2. Choose ONE of four cinematic worlds.
-   3. Enter name + email.
+   3. Enter name + phone + email (all required).
    4. A 15-second short film is generated from that portrait in the
       chosen world, via a shared background queue (handles many users
       at once, capped by MAX_CONCURRENT_GENERATIONS).
@@ -21,7 +21,6 @@
    export ARK_API_KEY=...
    export TOS_ACCESS_KEY=... TOS_SECRET_KEY=...
    export TOS_BUCKET=seedance-studio TOS_REGION=ap-southeast-1
-   # (no ffmpeg required — each film is a single 15s clip)
    streamlit run seedance_studio.py
 ============================================================
 """
@@ -62,35 +61,24 @@ TOS_BUCKET = os.environ.get("TOS_BUCKET", "")
 TOS_REGION = os.environ.get("TOS_REGION", "ap-southeast-1")
 TOS_ACCESS_KEY = os.environ.get("TOS_ACCESS_KEY", "")
 TOS_SECRET_KEY = os.environ.get("TOS_SECRET_KEY", "")
-# Endpoint used by the BytePlus `tos` Python SDK to upload/manage objects.
-#   Local / external:  tos-ap-southeast-1.bytepluses.com    (public, default)
-#   BFS / ECS in VPC:  tos-ap-southeast-1.ibytepluses.com   (private — faster, no egress cost)
-# NOTE: do NOT use the tos-s3-* variants here. Those are S3-compatible and
-# expect AWS4-HMAC-SHA256 signing; the BytePlus SDK uses TOS4-HMAC-SHA256.
 TOS_ENDPOINT = os.environ.get("TOS_ENDPOINT", f"https://tos-{TOS_REGION}.bytepluses.com")
-# Public bucket hostname — ALWAYS public, since Seedance fetches files over the internet.
 TOS_PUBLIC_HOST = f"{TOS_BUCKET}.tos-{TOS_REGION}.bytepluses.com"
 
 CLIP_DURATION = 15        # single-clip duration on Seedance 2.0
 ASPECT_RATIO = "9:16"
-RESOLUTION = "720p"        # 480p for fast/cheap testing; flip to "720p" or "1080p" for final
+RESOLUTION = "720p"
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 1000
 
-# Quick setup:
-#   export ARK_AK="AKLT..."
-#   export ARK_SK="..."
-#   # Optional — leave blank to auto-create on first run:
 ARK_ASSET_GROUP_ID = os.environ.get("ARK_ASSET_GROUP_ID", "")
 ARK_AK = os.environ.get("ARK_AK", "")
 ARK_SK = os.environ.get("ARK_SK", "")
-# ARK_ASSET_GROUP_ID = os.environ.get("ARK_ASSET_GROUP_ID", "")
-ARK_ASSET_GROUP_NAME = "seedance_studio_subjects"   # used if we need to create one
+ARK_ASSET_GROUP_NAME = "seedance_studio_subjects"
 ARK_PROJECT_NAME = "default"
 ARK_REGION = "ap-southeast-1"
 ASSET_POLL_INTERVAL = 5
-ASSET_POLL_TIMEOUT = 300   # asset preprocessing usually 20-60s
-USE_ASSET_LIBRARY = bool(ARK_AK and ARK_SK)   # auto-enable if AK/SK present
+ASSET_POLL_TIMEOUT = 300
+USE_ASSET_LIBRARY = bool(ARK_AK and ARK_SK)
 
 SMTP_HOST = os.environ.get("SMTP_HOST", "")
 SMTP_PORT = int(os.environ.get("SMTP_PORT", "587"))
@@ -108,28 +96,7 @@ BP_BLUE_SOFT = "#5B93FF"
 
 # ──────────────────────────────────────────────────────────
 # THEMES — four vibrant 15-second worlds; the customer chooses ONE
-#
-# Each theme is a self-contained 15s single-clip scene rendered from
-# ONLY the customer's uploaded portrait. Prompt style is adapted from
-# the awesome-seedance-2-prompts community collection (vibrant,
-# FX-forward, shot-by-shot timed, strict character consistency).
-#
-#   01 NEON VELOCITY    — Cyberpunk night street race, neon + speed
-#   02 LIQUID COUTURE   — Haute-couture fantasy on a sky-mirror salt flat
-#   03 STORMBREAKER     — Live-action anime elemental duel, water + lightning
-#   04 FESTIVAL OF LIGHT — Lantern festival river, fireworks, joyful MV
-#
-# REFERENCE IMAGE CONVENTION (per BytePlus Seedance 2.0 R2V):
-#   [Image 1] = the customer's portrait / face (asset:// URI) — ALWAYS,
-#               and the ONLY required reference. The protagonist's face,
-#               hair, and identity from [Image 1] must stay perfectly
-#               consistent across every shot, no deformation or drift,
-#               regardless of gender.
-#   (Optional) set_plate_url / secondary_character_url may be added per
-#   theme; the pipeline appends them as [Image 2] / [Image 3] only if set.
 # ──────────────────────────────────────────────────────────
-
-# Universal footer — character lock + copyright-safe audio.
 PROMPT_FOOTER = (
     "no copyrighted BGM sound, no recognizable melodies, no "
     "famous film themes, no popular songs, no lyrics in any language. Use "
@@ -145,9 +112,6 @@ def _p(text: str) -> str:
 
 THEMES: dict[str, dict[str, Any]] = {
 
-    # ═══════════════════════════════════════════════════════
-    # 01 — NEON VELOCITY   (Cyberpunk night street race)
-    # ═══════════════════════════════════════════════════════
     "neon-velocity": {
         "code": "01",
         "name": "NEON VELOCITY",
@@ -191,9 +155,6 @@ THEMES: dict[str, dict[str, Any]] = {
         ),
     },
 
-    # ═══════════════════════════════════════════════════════
-    # 02 — LIQUID COUTURE   (Haute-couture fantasy)
-    # ═══════════════════════════════════════════════════════
     "liquid-couture": {
         "code": "02",
         "name": "LIQUID COUTURE",
@@ -236,9 +197,6 @@ THEMES: dict[str, dict[str, Any]] = {
         ),
     },
 
-    # ═══════════════════════════════════════════════════════
-    # 03 — STORMBREAKER   (Live-action anime elemental duel)
-    # ═══════════════════════════════════════════════════════
     "stormbreaker": {
         "code": "03",
         "name": "STORMBREAKER",
@@ -282,9 +240,6 @@ THEMES: dict[str, dict[str, Any]] = {
         ),
     },
 
-    # ═══════════════════════════════════════════════════════
-    # 04 — FESTIVAL OF LIGHT   (Lantern festival celebration)
-    # ═══════════════════════════════════════════════════════
     "festival-of-light": {
         "code": "04",
         "name": "FESTIVAL OF LIGHT",
@@ -353,7 +308,7 @@ html, body, [data-testid="stAppViewContainer"] {
     #07080A !important;
 }
 .block-container {
-    max-width: 1280px !important;
+    max-width: 1200px !important;
     padding-top: 2.4rem !important;
     padding-bottom: 3rem !important;
 }
@@ -368,43 +323,60 @@ h1, h2, h3, h4 {
     letter-spacing: -0.01em !important;
 }
 
-/* Primary buttons — BytePlus blue */
-.stButton > button, .stDownloadButton > button {
+/* ──────────────────────────────────────────────────────────
+   BUTTONS
+   In Streamlit the DEFAULT button kind is "secondary", so we key
+   styling on the kind attribute and mark real CTAs as type="primary".
+     • kind="primary"   → solid BytePlus blue (the CTA look)
+     • kind="secondary" → transparent outline (back / ghost actions)
+   ────────────────────────────────────────────────────────── */
+.stButton > button[kind="primary"],
+.stDownloadButton > button {
     background: #2E72FF !important;
     color: #FFFFFF !important;
-    border: none !important;
-    border-radius: 4px !important;
+    border: 1px solid #2E72FF !important;
+    border-radius: 6px !important;
     font-family: 'JetBrains Mono', monospace !important;
     font-size: 13px !important;
     font-weight: 500 !important;
-    letter-spacing: 0.18em !important;
+    letter-spacing: 0.16em !important;
     text-transform: uppercase !important;
     padding: 1.0rem 2rem !important;
-    transition: all 0.2s ease !important;
-    box-shadow: 0 4px 24px rgba(46,114,255,0.25) !important;
+    transition: all 0.18s ease !important;
+    box-shadow: 0 4px 24px rgba(46,114,255,0.28) !important;
     min-height: 52px !important;
 }
-.stButton > button:hover, .stDownloadButton > button:hover {
+.stButton > button[kind="primary"]:hover,
+.stDownloadButton > button:hover {
     background: #4d86ff !important;
+    border-color: #4d86ff !important;
     transform: translateY(-1px);
     color: #FFFFFF !important;
-    box-shadow: 0 6px 30px rgba(46,114,255,0.4) !important;
+    box-shadow: 0 6px 30px rgba(46,114,255,0.45) !important;
 }
-.stButton > button:disabled {
-    background: rgba(237,235,228,0.08) !important;
-    color: rgba(237,235,228,0.3) !important;
+.stButton > button[kind="primary"]:disabled {
+    background: rgba(46,114,255,0.18) !important;
+    border-color: transparent !important;
+    color: rgba(237,235,228,0.45) !important;
     cursor: not-allowed !important;
     box-shadow: none !important;
+    transform: none !important;
 }
 
-/* Secondary button variant */
 .stButton > button[kind="secondary"] {
     background: transparent !important;
     color: #EDEBE4 !important;
-    border: 1px solid rgba(237,235,228,0.25) !important;
-    font-size: 13px !important;
-    letter-spacing: 0.18em !important;
+    border: 1px solid rgba(237,235,228,0.22) !important;
+    border-radius: 6px !important;
+    font-family: 'JetBrains Mono', monospace !important;
+    font-size: 12px !important;
+    font-weight: 500 !important;
+    letter-spacing: 0.16em !important;
+    text-transform: uppercase !important;
+    padding: 0.9rem 1.6rem !important;
+    min-height: 48px !important;
     box-shadow: none !important;
+    transition: all 0.18s ease !important;
 }
 .stButton > button[kind="secondary"]:hover {
     border-color: #2E72FF !important;
@@ -412,33 +384,58 @@ h1, h2, h3, h4 {
     color: #FFFFFF !important;
     box-shadow: none !important;
 }
+.stButton > button[kind="secondary"]:disabled {
+    color: rgba(237,235,228,0.3) !important;
+    border-color: rgba(237,235,228,0.1) !important;
+    cursor: not-allowed !important;
+}
 
-/* Inputs — force a dark field with high-contrast text (BaseWeb wrappers too) */
-[data-testid="stTextInput"] [data-baseweb="input"],
-[data-testid="stTextInput"] [data-baseweb="base-input"],
-[data-testid="stTextInput"] div[data-baseweb] {
+/* ──────────────────────────────────────────────────────────
+   TEXT INPUTS
+   Let the BaseWeb wrapper own the border (avoids the double-border /
+   pink accent that BaseWeb paints on focus). The inner <input> is
+   transparent + borderless; the wrapper draws the blue focus ring.
+   ────────────────────────────────────────────────────────── */
+[data-testid="stTextInput"] div[data-baseweb="input"],
+[data-testid="stTextInput"] div[data-baseweb="base-input"] {
     background: #12141A !important;
-    border-radius: 4px !important;
+    border: 1px solid rgba(237,235,228,0.18) !important;
+    border-radius: 6px !important;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease !important;
+}
+[data-testid="stTextInput"] div[data-baseweb="input"]:hover {
+    border-color: rgba(237,235,228,0.34) !important;
+}
+[data-testid="stTextInput"] div[data-baseweb="input"]:focus-within {
+    border-color: #2E72FF !important;
+    box-shadow: 0 0 0 3px rgba(46,114,255,0.22) !important;
 }
 [data-testid="stTextInput"] input {
-    background: #12141A !important;
+    background: transparent !important;
     color: #F5F3EC !important;
-    -webkit-text-fill-color: #F5F3EC !important;   /* overrides BaseWeb's white fill */
+    -webkit-text-fill-color: #F5F3EC !important;
     caret-color: #2E72FF !important;
-    border: 1px solid rgba(237,235,228,0.20) !important;
-    border-radius: 4px !important;
+    border: none !important;
+    outline: none !important;
+    box-shadow: none !important;
     font-family: 'JetBrains Mono', monospace !important;
+    font-size: 14px !important;
     letter-spacing: 0.04em !important;
-    padding: 0.9rem 1rem !important;
+    padding: 0.95rem 1rem !important;
 }
 [data-testid="stTextInput"] input::placeholder {
-    color: #7e7869 !important;
-    -webkit-text-fill-color: #7e7869 !important;
+    color: #6f6a5d !important;
+    -webkit-text-fill-color: #6f6a5d !important;
     opacity: 1 !important;
 }
-[data-testid="stTextInput"] input:focus {
-    border-color: #2E72FF !important;
-    box-shadow: 0 0 0 2px rgba(46,114,255,0.25) !important;
+/* Kill Chrome autofill's yellow box / colour bleed */
+[data-testid="stTextInput"] input:-webkit-autofill,
+[data-testid="stTextInput"] input:-webkit-autofill:hover,
+[data-testid="stTextInput"] input:-webkit-autofill:focus {
+    -webkit-text-fill-color: #F5F3EC !important;
+    -webkit-box-shadow: 0 0 0 1000px #12141A inset !important;
+    caret-color: #2E72FF !important;
+    transition: background-color 9999s ease-in-out 0s !important;
 }
 
 /* Tabs */
@@ -484,6 +481,7 @@ h1, h2, h3, h4 {
 .serif-italic { font-family: 'Cormorant Garamond', serif; font-style: italic; font-weight: 500; color: #c4bfb3; }
 .serif-body { font-family: 'Cormorant Garamond', serif; font-weight: 500; line-height: 1.65; color: #d9d6cc; font-size: 1.18rem; }
 .bp-blue { color: #2E72FF; }
+.req { color: #2E72FF; font-family:'JetBrains Mono',monospace; }
 
 .corner { position: absolute; width: 16px; height: 16px; border: 1px solid rgba(46,114,255,0.6); }
 .corner.tl { top: 0; left: 0; border-right: none; border-bottom: none; }
@@ -506,6 +504,14 @@ body::before {
 .hero-h1 .it { font-style: italic; color: #c4bfb3; }
 
 .banner-bar { display: flex; justify-content: space-between; align-items: center; margin-bottom: 2.6rem; }
+
+/* Card surface used on the details / form screen */
+.form-card {
+    background: linear-gradient(180deg, rgba(18,20,26,0.9), rgba(12,14,18,0.9));
+    border: 1px solid rgba(237,235,228,0.10);
+    border-radius: 12px;
+    padding: 30px 32px;
+}
 </style>
 """
 
@@ -513,7 +519,6 @@ body::before {
 # BRANDING
 # ──────────────────────────────────────────────────────────
 def byteplus_logo(height: int = 30) -> str:
-    """Inline BytePlus wordmark (no external dependency)."""
     fs = int(height * 0.66)
     return (
         f'<div style="display:flex;align-items:center;gap:12px">'
@@ -530,7 +535,6 @@ def byteplus_logo(height: int = 30) -> str:
 
 
 def render_header(step: int | None = None):
-    """Top bar with BytePlus logo + product label + optional step indicator."""
     steps = ["THE SUBJECT", "THE WORLD", "YOUR DETAILS", "GENERATION"]
     if step is not None:
         right = (
@@ -566,18 +570,16 @@ def b64(data: bytes, mime: str = "image/jpeg") -> str:
     return f"data:{mime};base64,{base64.b64encode(data).decode()}"
 
 
+def field_label(text: str, required: bool = True) -> str:
+    star = ' <span class="req">*</span>' if required else ''
+    st.markdown(f'<div class="mono" style="margin-bottom:8px">{text}{star}</div>',
+                unsafe_allow_html=True)
+
+
 # ──────────────────────────────────────────────────────────
 # SEEDANCE / TOS  (usage UNCHANGED)
 # ──────────────────────────────────────────────────────────
 def submit_seedance_task(prompt: str, refs: list[str]) -> str:
-    """Submit a Seedance 2.0 R2V task with N reference images.
-
-    Reference positions are positional and correspond to [Image N] tokens in
-    the prompt (1-indexed). Convention used by this pipeline:
-       refs[0] → [Image 1] in the prompt = customer face (Character Plate)
-       refs[1] → [Image 2] in the prompt = theme Set Plate (environment)
-       refs[2] → [Image 3] in the prompt = secondary character (themes 02/03)
-    """
     content: list[dict] = [{"type": "text", "text": prompt}]
     for ref in refs:
         content.append({
@@ -625,7 +627,6 @@ def _tos_client():
 
 
 def upload_to_tos(local_path: str, key: str, content_type: str = "application/octet-stream") -> str:
-    """Upload a file to TOS and return a presigned GET URL (24h TTL)."""
     import tos as _tos
     client = _tos_client()
     with open(local_path, "rb") as f:
@@ -657,7 +658,6 @@ ARK_SERVICE = "ark"
 
 
 def _sign_ark_request(method: str, query: dict, body_str: str) -> tuple[str, dict]:
-    """Sign a BytePlus Open API request (Volcano v4 / HMAC-SHA256)."""
     now = datetime.now(timezone.utc)
     x_date = now.strftime("%Y%m%dT%H%M%SZ")
     short_date = now.strftime("%Y%m%d")
@@ -718,7 +718,6 @@ def _sign_ark_request(method: str, query: dict, body_str: str) -> tuple[str, dic
 
 
 def _ark_call(action: str, body: dict) -> dict:
-    """Call a ModelArk Open API action with AK/SK signing. Returns Result dict."""
     if not (ARK_AK and ARK_SK):
         raise RuntimeError("ARK_AK / ARK_SK not configured.")
     body_str = json.dumps(body, ensure_ascii=False)
@@ -739,14 +738,12 @@ def _ark_call(action: str, body: dict) -> dict:
 
 
 def _ensure_asset_group_id() -> str:
-    """Return a usable asset group ID, creating one if not configured/found.
-    Thread-safe: many concurrent jobs may be the first caller at once."""
     global ARK_ASSET_GROUP_ID
     if ARK_ASSET_GROUP_ID:
         return ARK_ASSET_GROUP_ID
 
     with _ASSET_GROUP_LOCK:
-        if ARK_ASSET_GROUP_ID:          # re-check after acquiring the lock
+        if ARK_ASSET_GROUP_ID:
             return ARK_ASSET_GROUP_ID
         try:
             result = _ark_call("ListAssetGroups", {
@@ -773,7 +770,6 @@ def _ensure_asset_group_id() -> str:
 
 def upload_to_asset_library(image_url: str, name: str | None = None,
                             on_step=None) -> str:
-    """Upload an image to ModelArk's asset library, poll until Active, return asset URI."""
     def _step(msg: str):
         if on_step:
             on_step(msg)
@@ -831,18 +827,28 @@ def download_url(url: str, dest: str) -> None:
 
 
 # ──────────────────────────────────────────────────────────
-# EMAIL DELIVERY  (multi-film collection)
+# VALIDATION
 # ──────────────────────────────────────────────────────────
 EMAIL_RE = re.compile(r"^[\w\.\+\-]+@[\w\-]+(\.[\w\-]+)+$")
+PHONE_RE = re.compile(r"^\+?\d{8,15}$")
 
 
 def is_valid_email(addr: str) -> bool:
     return bool(EMAIL_RE.match((addr or "").strip()))
 
 
+def is_valid_phone(num: str) -> bool:
+    """Lenient international check: strip spaces/dashes/brackets, then require
+    8–15 digits with an optional leading +. Works for VN (+84) and others."""
+    cleaned = re.sub(r"[\s\-().]", "", (num or "").strip())
+    return bool(PHONE_RE.match(cleaned))
+
+
+# ──────────────────────────────────────────────────────────
+# EMAIL DELIVERY  (multi-film collection)
+# ──────────────────────────────────────────────────────────
 def send_films_email(to_email: str, name: str,
                      films: list[tuple[dict, str]]) -> tuple[bool, str]:
-    """Auto-send the customer their completed collection of films."""
     if not EMAIL_ENABLED:
         return False, "Email is not configured on this server."
     if not is_valid_email(to_email):
@@ -854,7 +860,6 @@ def send_films_email(to_email: str, name: str,
     n = len(films)
     subject = f"{greeting}, your {n} Seedance short film{'s' if n != 1 else ''} are ready"
 
-    # Plaintext fallback
     text_lines = [f"Hi {greeting},", "",
                   f"Your {n} short film{'s' if n != 1 else ''} are ready to watch."]
     for theme, url in films:
@@ -863,7 +868,6 @@ def send_films_email(to_email: str, name: str,
                    "", "— Seedance Studio · BytePlus"]
     text_body = "\n".join(text_lines)
 
-    # HTML film cards
     cards = ""
     for theme, url in films:
         sig = theme["signature"]
@@ -959,11 +963,12 @@ def init_state():
         "photo_name": None,
         "photo_remote_url": None,
         "customer_name": "",
+        "customer_phone": "",
         "customer_email": "",
-        "theme_id": None,          # the single world the customer chose
-        "job_id": None,            # id of this session's queued background job
+        "theme_id": None,
+        "job_id": None,
         "error": None,
-        "detail_error": None,
+        "detail_errors": {},     # {"name": "...", "phone": "...", "email": "..."}
     }
     for k, v in defaults.items():
         if k not in st.session_state:
@@ -978,46 +983,24 @@ def goto(step: str):
 # ══════════════════════════════════════════════════════════════════════
 # CONCURRENCY — background job queue shared across ALL user sessions
 # ══════════════════════════════════════════════════════════════════════
-#
-# Why this exists: many people use the app at once. We must NOT run the
-# generation inside a user's Streamlit script thread (that blocks the
-# thread for minutes and loses everything if they refresh). Instead:
-#
-#   • A single process-wide JobQueue (st.cache_resource) holds every job,
-#     keyed by job_id, and runs them in a shared thread pool.
-#   • Each job is self-contained (its own photo bytes, name, email, theme)
-#     so it is fully decoupled from any st.session_state.
-#   • A global SEMAPHORE caps how many Seedance generations run AT ONCE
-#     (protects the BytePlus account from rate limits / overload). Extra
-#     jobs sit in QUEUED until a slot frees up.
-#   • The UI only POLLS a job by id and auto-reruns every couple seconds —
-#     it never blocks. A ?job=<id> URL param lets a refresh reconnect.
-#   • Auto-email runs inside the worker, so the customer still gets their
-#     film even if they closed the tab.
-#
-# Tune MAX_CONCURRENT_GENERATIONS to whatever your Seedance plan allows.
-# ══════════════════════════════════════════════════════════════════════
-
 MAX_CONCURRENT_GENERATIONS = int(os.environ.get("MAX_CONCURRENT_GENERATIONS", "6"))
 MAX_QUEUE_WORKERS = int(os.environ.get("MAX_QUEUE_WORKERS", "128"))
 
-# Guards the one-time asset-group resolution against concurrent first-callers.
 _ASSET_GROUP_LOCK = threading.Lock()
 
 
 @dataclass
 class Job:
-    """A single self-contained generation job, safe to mutate from a worker
-    thread and read from any Streamlit session thread under `lock`."""
     job_id: str
     photo_bytes: bytes
     photo_name: str
     theme_id: str
     customer_name: str
+    customer_phone: str
     customer_email: str
     status: str = "QUEUED"          # QUEUED | RUNNING | DONE | FAILED
     step: str = "WAITING IN QUEUE"
-    progress: float = 0.0           # 0.0 — 1.0
+    progress: float = 0.0
     final_url: str | None = None
     error: str | None = None
     email_status: str = "PENDING"   # PENDING | SENT | SKIPPED | FAILED: <msg>
@@ -1041,6 +1024,7 @@ class Job:
                 "photo_name": self.photo_name,
                 "theme_id": self.theme_id,
                 "customer_name": self.customer_name,
+                "customer_phone": self.customer_phone,
                 "customer_email": self.customer_email,
                 "status": self.status,
                 "step": self.step,
@@ -1053,28 +1037,23 @@ class Job:
 
 
 class JobQueue:
-    """Process-wide singleton job runner. Survives Streamlit reruns; lives for
-    the server lifetime (in-memory only — a restart clears it)."""
-
     def __init__(self):
         self.jobs: dict[str, Job] = {}
         self.lock = threading.Lock()
         self.executor = ThreadPoolExecutor(
             max_workers=MAX_QUEUE_WORKERS, thread_name_prefix="seedance-job"
         )
-        # Caps concurrent *generations* (not threads). Excess jobs wait QUEUED.
         self.gen_semaphore = threading.Semaphore(MAX_CONCURRENT_GENERATIONS)
 
-    # ---- public API -------------------------------------------------
     def submit(self, photo_bytes: bytes, photo_name: str, theme_id: str,
-               customer_name: str, customer_email: str) -> str:
+               customer_name: str, customer_phone: str, customer_email: str) -> str:
         job_id = (
             f"job-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
         )
         job = Job(
             job_id=job_id, photo_bytes=photo_bytes, photo_name=photo_name,
             theme_id=theme_id, customer_name=customer_name,
-            customer_email=customer_email,
+            customer_phone=customer_phone, customer_email=customer_email,
         )
         with self.lock:
             self.jobs[job_id] = job
@@ -1091,23 +1070,18 @@ class JobQueue:
             return sum(1 for j in self.jobs.values()
                        if j.status in ("QUEUED", "RUNNING"))
 
-    # ---- worker -----------------------------------------------------
     def _run(self, job: Job):
-        """Full single-theme pipeline for one job. NEVER touches st.* — runs
-        in a background thread with no Streamlit context."""
         if DEMO_MODE:
             return self._run_demo(job)
 
-        # Wait for a generation slot without blocking other jobs' threads.
         if not self.gen_semaphore.acquire(blocking=False):
             job.set(status="QUEUED", step="WAITING IN QUEUE FOR A SLOT")
-            self.gen_semaphore.acquire()  # block this worker only
+            self.gen_semaphore.acquire()
         try:
             self._generate(job)
         finally:
             self.gen_semaphore.release()
 
-        # Email AFTER releasing the slot (doesn't need a generation slot).
         self._email(job)
 
     def _generate(self, job: Job):
@@ -1120,7 +1094,6 @@ class JobQueue:
             def step(msg: str):
                 job.set(step=msg)
 
-            # 1) Stage the customer face to TOS, then to the asset library.
             step("STAGING PHOTO TO TOS")
             key = f"seedance/subjects/{uuid.uuid4().hex}.jpg"
             tos_url = upload_bytes_to_tos(job.photo_bytes, key, content_type="image/jpeg")
@@ -1134,7 +1107,6 @@ class JobQueue:
                 character_ref = tos_url
             job.set(progress=0.15)
 
-            # 2) Build references. Image 1 = face (always). Optional set/secondary.
             step("PREPARING REFERENCES")
             refs: list[str] = [character_ref]
             if theme.get("set_plate_url"):
@@ -1149,7 +1121,6 @@ class JobQueue:
                 refs.append(sec)
             job.set(progress=0.22)
 
-            # 3) Submit + poll Seedance.
             step(f"SUBMITTING · {len(refs)} REFS")
             task_id = submit_seedance_task(prompt=theme["prompt"], refs=refs)
             job.set(step=f"GENERATING · {task_id[-8:]}", progress=0.30)
@@ -1160,7 +1131,6 @@ class JobQueue:
 
             video_url = poll_seedance_task(task_id, on_progress=on_progress)
 
-            # 4) Download + publish to TOS for a stable shareable link.
             step("DOWNLOADING FILM")
             job.set(progress=0.90)
             clip_path = str(workdir / "film.mp4")
@@ -1192,7 +1162,6 @@ class JobQueue:
             job.set(email_status=f"FAILED: {e}")
 
     def _run_demo(self, job: Job):
-        """Mocked progress when no API keys are configured."""
         job.set(status="RUNNING", started_at=time.time(), step="DEMO · SIMULATING")
         for tick in range(40):
             job.set(progress=min(0.99, (tick + 1) / 40))
@@ -1203,7 +1172,6 @@ class JobQueue:
 
 @st.cache_resource
 def get_job_queue() -> JobQueue:
-    """One shared queue per Streamlit server process (across all sessions)."""
     return JobQueue()
 
 
@@ -1226,8 +1194,8 @@ def render_welcome():
     st.markdown(
         '<p class="serif-body" style="max-width:560px;margin-top:2.4rem;font-size:1.2rem">'
         "Upload a single portrait — or take one now. Choose one of four cinematic "
-        "worlds — sci-fi, imperial, neo-noir, or gothic — and we&rsquo;ll cast you as "
-        "the lead in a 15-second short film, delivered straight to your inbox."
+        "worlds and we&rsquo;ll cast you as the lead in a 15-second short film, "
+        "delivered straight to your inbox."
         f'<br><span class="mono" style="margin-top:14px;display:inline-block">1 FILM · 00:15 · {RESOLUTION.upper()} · 9:16</span>'
         '</p>',
         unsafe_allow_html=True,
@@ -1237,13 +1205,12 @@ def render_welcome():
 
     cols = st.columns([1.3, 5])
     with cols[0]:
-        if st.button("Begin →", key="begin", use_container_width=True):
+        if st.button("Begin →", key="begin", type="primary", use_container_width=True):
             goto("capture")
 
-    # Mode banner
     if DEMO_MODE:
         st.markdown(
-            '<div class="mono" style="margin-top:44px;padding:12px 16px;border:1px solid rgba(245,184,0,0.3);display:inline-block">'
+            '<div class="mono" style="margin-top:44px;padding:12px 16px;border:1px solid rgba(245,184,0,0.3);border-radius:6px;display:inline-block">'
             '<span style="color:#f5b800">● DEMO MODE</span>'
             '<span style="margin-left:16px;color:#cfc9bd">Set ARK_API_KEY + TOS_* env vars to enable real generation</span>'
             '</div>',
@@ -1251,7 +1218,7 @@ def render_welcome():
         )
     elif USE_ASSET_LIBRARY:
         st.markdown(
-            f'<div class="mono" style="margin-top:44px;padding:12px 16px;border:1px solid rgba(46,114,255,0.4);display:inline-block">'
+            f'<div class="mono" style="margin-top:44px;padding:12px 16px;border:1px solid rgba(46,114,255,0.4);border-radius:6px;display:inline-block">'
             f'<span style="color:{BP_BLUE}">● ASSET LIBRARY ACTIVE</span>'
             '<span style="margin-left:16px;color:#cfc9bd">Real-face photos enabled via BytePlus ModelArk</span>'
             '</div>',
@@ -1259,7 +1226,7 @@ def render_welcome():
         )
     else:
         st.markdown(
-            '<div class="mono" style="margin-top:44px;padding:12px 16px;border:1px solid rgba(245,184,0,0.3);display:inline-block">'
+            '<div class="mono" style="margin-top:44px;padding:12px 16px;border:1px solid rgba(245,184,0,0.3);border-radius:6px;display:inline-block">'
             '<span style="color:#f5b800">● FACE-FREE MODE</span>'
             '<span style="margin-left:16px;color:#cfc9bd">Set ARK_AK + ARK_SK to enable real-face uploads</span>'
             '</div>',
@@ -1347,9 +1314,10 @@ def render_capture():
                 st.rerun()
 
     st.markdown("<div style='height:56px'></div>", unsafe_allow_html=True)
-    cols = st.columns([6, 1.5])
+    cols = st.columns([6, 1.6])
     with cols[1]:
-        if st.button("Choose a world →", key="cap_next", use_container_width=True,
+        if st.button("Choose a world →", key="cap_next", type="primary",
+                     use_container_width=True,
                      disabled=st.session_state.photo_bytes is None):
             goto("themes")
 
@@ -1358,7 +1326,6 @@ def render_capture():
 # SCREEN — THEMES (choose ONE world)
 # ──────────────────────────────────────────────────────────
 def _theme_select_card(theme: dict, selected: bool) -> str:
-    """A single selectable world card."""
     border = (
         f"2px solid {theme['signature']}"
         if selected else "1px solid rgba(237,235,228,0.12)"
@@ -1439,11 +1406,10 @@ def render_themes():
             with col:
                 is_sel = (tid == selected)
                 st.markdown(_theme_select_card(t, is_sel), unsafe_allow_html=True)
-                label = f"✓  Selected" if is_sel else f"Select {t['name']}"
+                label = "✓  Selected" if is_sel else f"Select {t['name']}"
                 if st.button(label, key=f"sel_{tid}",
                              use_container_width=True,
                              type="primary" if is_sel else "secondary"):
-                    # Single-select: clicking sets it as the only choice
                     st.session_state.theme_id = tid
                     st.rerun()
                 st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
@@ -1451,17 +1417,14 @@ def render_themes():
     st.markdown("<div style='height:32px'></div>", unsafe_allow_html=True)
     cols = st.columns([6, 1.6])
     with cols[1]:
-        if selected:
-            label = f"Continue →"
-        else:
-            label = "Pick a world"
-        if st.button(label, key="th_next", use_container_width=True,
+        label = "Continue →" if selected else "Pick a world"
+        if st.button(label, key="th_next", type="primary", use_container_width=True,
                      disabled=(selected is None)):
             goto("details")
 
 
 # ──────────────────────────────────────────────────────────
-# SCREEN — DETAILS (name + email)
+# SCREEN — DETAILS (name + phone + email — all required)
 # ──────────────────────────────────────────────────────────
 def render_details():
     render_header(3)
@@ -1470,87 +1433,125 @@ def render_details():
         if st.button("← Back", key="det_back", type="secondary"):
             goto("themes")
 
-    st.markdown("<div style='height:36px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
 
-    left, right = st.columns([1, 1], gap="large")
+    errs = st.session_state.detail_errors or {}
+    left, right = st.columns([1, 1.15], gap="large")
 
+    # ── LEFT: context — heading, chosen world, photo ──────────────
     with left:
         st.markdown(
-            '<h2 style="font-size:3.4rem;line-height:0.96;margin:0">'
-            'Where do we<br><span class="serif-italic" style="font-size:3.4rem">send your film?</span>'
+            '<h2 style="font-size:3.2rem;line-height:0.98;margin:0">'
+            'Where do we<br><span class="serif-italic" style="font-size:3.2rem">send your film?</span>'
             '</h2>'
-            '<p class="serif-body" style="margin-top:1.8rem;max-width:420px">'
-            "When your short film finishes rendering, we&rsquo;ll deliver it to "
-            "your inbox automatically — no need to wait on this page."
+            '<p class="serif-body" style="margin-top:1.6rem;max-width:420px">'
+            "When your short film finishes rendering, we&rsquo;ll deliver it to your "
+            "inbox automatically — so you don&rsquo;t need to wait on this page."
             '</p>',
             unsafe_allow_html=True,
         )
+
+        chosen = THEMES.get(st.session_state.theme_id, {})
         if st.session_state.photo_bytes:
-            chosen = THEMES.get(st.session_state.theme_id, {})
-            chosen_line = (
-                f'<div class="mono" style="margin-top:14px;color:{chosen.get("signature","#9a9488")}">'
-                f'CHOSEN WORLD · {chosen.get("name","—")}</div>'
-            )
+            st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
             st.markdown(
-                f'<img src="{b64(st.session_state.photo_bytes)}" '
-                f'style="width:160px;aspect-ratio:3/4;object-fit:cover;margin-top:1.6rem;'
-                f'outline:1px solid rgba(46,114,255,0.4);filter:grayscale(0.2) contrast(1.05)" />'
-                f'{chosen_line}',
+                f'<div style="display:flex;gap:18px;align-items:center">'
+                f'  <img src="{b64(st.session_state.photo_bytes)}" '
+                f'style="width:104px;aspect-ratio:3/4;object-fit:cover;border-radius:6px;'
+                f'outline:1px solid rgba(46,114,255,0.4);filter:grayscale(0.15) contrast(1.05)" />'
+                f'  <div>'
+                f'    <div class="mono">CHOSEN WORLD</div>'
+                f'    <div style="font-family:Cormorant Garamond,serif;font-size:1.7rem;'
+                f'color:#F5F3EC;line-height:1.05;margin-top:6px">{chosen.get("name","—")}</div>'
+                f'    <div class="serif-italic" style="margin-top:4px;font-size:1rem">'
+                f'{chosen.get("tagline","")}</div>'
+                f'    <div style="display:flex;align-items:center;gap:8px;margin-top:10px">'
+                f'      <div style="width:9px;height:9px;border-radius:50%;'
+                f'background:{chosen.get("signature", BP_BLUE)}"></div>'
+                f'      <div class="mono" style="font-size:10px">{chosen.get("genre","")}</div>'
+                f'    </div>'
+                f'  </div>'
+                f'</div>',
                 unsafe_allow_html=True,
             )
 
+    # ── RIGHT: the form ───────────────────────────────────────────
     with right:
-        st.markdown('<div class="mono" style="margin-bottom:8px">YOUR NAME</div>', unsafe_allow_html=True)
+        st.markdown('<div class="mono" style="margin-bottom:18px;color:#cfc9bd">'
+                    'YOUR DETAILS <span style="opacity:0.5">— ALL FIELDS REQUIRED</span></div>',
+                    unsafe_allow_html=True)
+
+        field_label("Full name")
         name = st.text_input("name", value=st.session_state.customer_name,
                              placeholder="e.g. Tan Nguyen", key="name_input",
                              label_visibility="collapsed")
-        st.markdown('<div class="mono" style="margin:18px 0 8px 0">YOUR EMAIL</div>', unsafe_allow_html=True)
+        if errs.get("name"):
+            st.markdown(f'<div class="mono" style="margin-top:6px;color:#FF6B6B">✗ {errs["name"]}</div>',
+                        unsafe_allow_html=True)
+
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+        field_label("Phone number")
+        phone = st.text_input("phone", value=st.session_state.customer_phone,
+                              placeholder="e.g. +84 90 123 4567", key="phone_input",
+                              label_visibility="collapsed")
+        if errs.get("phone"):
+            st.markdown(f'<div class="mono" style="margin-top:6px;color:#FF6B6B">✗ {errs["phone"]}</div>',
+                        unsafe_allow_html=True)
+
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+        field_label("Email address")
         email = st.text_input("email", value=st.session_state.customer_email,
                               placeholder="you@example.com", key="email_input",
                               label_visibility="collapsed")
+        if errs.get("email"):
+            st.markdown(f'<div class="mono" style="margin-top:6px;color:#FF6B6B">✗ {errs["email"]}</div>',
+                        unsafe_allow_html=True)
 
         if not EMAIL_ENABLED:
             st.markdown(
-                '<div class="mono" style="margin-top:14px;color:#f5b800">'
-                '● EMAIL NOT CONFIGURED — films will still be shown on screen.'
-                '</div>',
+                '<div class="mono" style="margin-top:18px;color:#9a9488;line-height:1.6">'
+                '● Delivery email isn&rsquo;t configured on this server — your film will '
+                'still be shown here on screen.</div>',
                 unsafe_allow_html=True,
             )
 
-        if st.session_state.detail_error:
-            st.markdown(
-                f'<div class="mono" style="margin-top:14px;color:#FF6B6B">✗ {st.session_state.detail_error}</div>',
-                unsafe_allow_html=True,
-            )
-
-        st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-        if st.button("Create my film →", key="det_next", use_container_width=True):
+        st.markdown("<div style='height:26px'></div>", unsafe_allow_html=True)
+        if st.button("Create my film →", key="det_next", type="primary",
+                     use_container_width=True):
+            new_errs: dict[str, str] = {}
             if not st.session_state.theme_id:
-                st.session_state.detail_error = "Please go back and choose a world."
-                st.rerun()
-            elif not (name or "").strip():
-                st.session_state.detail_error = "Please enter your name."
-                st.rerun()
+                new_errs["email"] = "Please go back and choose a world first."
+            if not (name or "").strip():
+                new_errs["name"] = "Please enter your name."
+            if not (phone or "").strip():
+                new_errs["phone"] = "Please enter your phone number."
+            elif not is_valid_phone(phone):
+                new_errs["phone"] = "Enter a valid phone number (8–15 digits, optional +)."
+            if not (email or "").strip():
+                new_errs["email"] = "Please enter your email address."
             elif not is_valid_email(email):
-                st.session_state.detail_error = "That doesn't look like a valid email address."
+                new_errs["email"] = "That doesn't look like a valid email address."
+
+            # Persist what they typed so it survives the rerun
+            st.session_state.customer_name = (name or "").strip()
+            st.session_state.customer_phone = (phone or "").strip()
+            st.session_state.customer_email = (email or "").strip()
+
+            if new_errs:
+                st.session_state.detail_errors = new_errs
                 st.rerun()
             else:
-                st.session_state.customer_name = name.strip()
-                st.session_state.customer_email = email.strip()
-                st.session_state.detail_error = None
-                # Enqueue a background job (fire-and-forget). The worker runs
-                # in the shared process-wide queue, capped by the global
-                # concurrency semaphore — so many users can submit at once.
+                st.session_state.detail_errors = {}
                 q = get_job_queue()
                 job_id = q.submit(
                     photo_bytes=st.session_state.photo_bytes,
                     photo_name=st.session_state.photo_name or "photo",
                     theme_id=st.session_state.theme_id,
                     customer_name=st.session_state.customer_name,
+                    customer_phone=st.session_state.customer_phone,
                     customer_email=st.session_state.customer_email,
                 )
                 st.session_state.job_id = job_id
-                # Put the job id in the URL so a refresh reconnects to it.
                 try:
                     st.query_params["job"] = job_id
                 except Exception:
@@ -1570,7 +1571,7 @@ def render_generating():
         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
         st.error("We couldn't find your job — it may have expired after a server "
                  "restart. Please start again.")
-        if st.button("← Start over", type="secondary"):
+        if st.button("← Start over", key="gen_restart", type="secondary"):
             _reset_session()
         return
 
@@ -1578,7 +1579,6 @@ def render_generating():
     theme = THEMES.get(snap["theme_id"], {})
     sig = theme.get("signature", BP_BLUE)
 
-    # Terminal? hand off to the result screen.
     if snap["status"] in ("DONE", "FAILED"):
         goto("result")
 
@@ -1589,7 +1589,7 @@ def render_generating():
         if job.photo_bytes:
             st.markdown(
                 f'<img src="{b64(job.photo_bytes)}" '
-                f'style="width:100%;aspect-ratio:3/4;object-fit:cover;'
+                f'style="width:100%;aspect-ratio:3/4;object-fit:cover;border-radius:6px;'
                 f'outline:1px solid rgba(46,114,255,0.3);'
                 f'filter:grayscale(0.25) contrast(1.05)" />',
                 unsafe_allow_html=True,
@@ -1654,7 +1654,6 @@ def render_generating():
                 unsafe_allow_html=True,
             )
 
-    # Non-blocking auto-refresh: end this script run, rerun in ~2s.
     time.sleep(2.0)
     st.rerun()
 
@@ -1671,7 +1670,7 @@ def render_result():
         st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
         st.error("We couldn't find your film — the job may have expired. "
                  "Please start again.")
-        if st.button("← Start over", type="secondary"):
+        if st.button("← Start over", key="res_restart", type="secondary"):
             _reset_session()
         return
 
@@ -1702,12 +1701,11 @@ def render_result():
             unsafe_allow_html=True,
         )
 
-    # Email status strip
     es = snap["email_status"]
     if es == "SENT":
         st.markdown(
             f'<div style="margin-top:24px;padding:16px 20px;background:#0F1116;'
-            f'border-left:3px solid {BP_BLUE}">'
+            f'border-left:3px solid {BP_BLUE};border-radius:6px">'
             f'  <div class="mono" style="color:{BP_BLUE}">✓ DELIVERED</div>'
             f'  <div class="serif-body" style="margin-top:6px;font-size:1.05rem">'
             f'{poss} film was emailed to '
@@ -1718,7 +1716,7 @@ def render_result():
     elif es and es.startswith("FAILED"):
         st.markdown(
             f'<div style="margin-top:24px;padding:16px 20px;background:#1A0F0F;'
-            f'border-left:3px solid #FF6B6B">'
+            f'border-left:3px solid #FF6B6B;border-radius:6px">'
             f'  <div class="mono" style="color:#FF6B6B">✗ EMAIL NOT SENT</div>'
             f'  <div class="serif-body" style="margin-top:6px;font-size:1.05rem">'
             f'{es[7:].strip(": ")} — your film is still available below.</div></div>',
@@ -1734,7 +1732,8 @@ def render_result():
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
     bcols = st.columns([3, 1.6])
     with bcols[1]:
-        if st.button("Make another →", key="restart", use_container_width=True):
+        if st.button("Make another →", key="restart", type="primary",
+                     use_container_width=True):
             _reset_session()
 
 
@@ -1759,15 +1758,15 @@ def _render_film_card(tid: str, snap: dict | None):
         st.video(final_url)
         st.markdown(
             f'<a href="{final_url}" target="_blank" style="text-decoration:none">'
-            f'<button style="width:100%;background:{sig};color:#FFFFFF;border:none;'
-            f'font-family:JetBrains Mono,monospace;font-size:11px;font-weight:500;'
-            f'letter-spacing:0.18em;text-transform:uppercase;padding:0.8rem 1rem;'
-            f'cursor:pointer;border-radius:4px;min-height:44px">Download .mp4</button></a>',
+            f'<button style="width:100%;background:{sig};color:#07080A;border:none;'
+            f'font-family:JetBrains Mono,monospace;font-size:11px;font-weight:600;'
+            f'letter-spacing:0.18em;text-transform:uppercase;padding:0.85rem 1rem;'
+            f'cursor:pointer;border-radius:6px;min-height:44px">Download .mp4</button></a>',
             unsafe_allow_html=True,
         )
     elif status == "FAILED":
         st.markdown(
-            f'<div style="padding:18px 22px;background:#1A0F0F;border-left:3px solid #FF6B6B">'
+            f'<div style="padding:18px 22px;background:#1A0F0F;border-left:3px solid #FF6B6B;border-radius:6px">'
             f'  <div class="mono" style="color:#FF6B6B">✗ FAILED</div>'
             f'  <div class="serif-body" style="margin-top:6px;font-size:0.95rem">'
             f'{(snap or {}).get("error") or "Unknown error"}</div></div>',
@@ -1793,10 +1792,9 @@ def _render_film_card(tid: str, snap: dict | None):
 
 
 def _reset_session():
-    """Clear this session and its URL job param to start a fresh flow."""
     for k in ("step", "photo_bytes", "photo_name", "photo_remote_url",
-              "customer_name", "customer_email", "theme_id", "job_id",
-              "error", "detail_error"):
+              "customer_name", "customer_phone", "customer_email", "theme_id",
+              "job_id", "error", "detail_errors"):
         st.session_state.pop(k, None)
     try:
         st.query_params.clear()
@@ -1819,8 +1817,6 @@ def main():
     st.markdown(CSS, unsafe_allow_html=True)
     init_state()
 
-    # Refresh-safe resume: if the URL carries a job id we still know about,
-    # reconnect this session to it (so reloading the tab doesn't lose the film).
     if not st.session_state.get("job_id"):
         try:
             url_job = st.query_params.get("job")
