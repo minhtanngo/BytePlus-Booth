@@ -576,6 +576,19 @@ def field_label(text: str, required: bool = True) -> str:
                 unsafe_allow_html=True)
 
 
+def fmt_mmss(seconds: float | int | None) -> str:
+    """Seconds → MM:SS."""
+    s = max(0, int(seconds or 0))
+    return f"{s // 60:02d}:{s % 60:02d}"
+
+
+def fmt_clock(ts: float | None) -> str:
+    """Epoch timestamp → HH:MM:SS (server local time)."""
+    if not ts:
+        return "—"
+    return datetime.fromtimestamp(ts).strftime("%H:%M:%S")
+
+
 # ──────────────────────────────────────────────────────────
 # SEEDANCE / TOS  (usage UNCHANGED)
 # ──────────────────────────────────────────────────────────
@@ -1017,8 +1030,13 @@ class Job:
     def snapshot(self) -> dict:
         with self.lock:
             now = time.time()
-            elapsed = (self.finished_at or now) - (self.started_at or now) \
-                if self.started_at else 0
+            # render time = time spent actually generating (started → finished/now)
+            render_elapsed = (self.finished_at or now) - self.started_at \
+                if self.started_at else 0.0
+            # total time = whole journey since submission (incl. queue wait)
+            total_elapsed = (self.finished_at or now) - self.created_at
+            # how long it waited in the queue before a slot opened
+            queue_wait = (self.started_at or now) - self.created_at
             return {
                 "job_id": self.job_id,
                 "photo_name": self.photo_name,
@@ -1032,7 +1050,12 @@ class Job:
                 "final_url": self.final_url,
                 "error": self.error,
                 "email_status": self.email_status,
-                "elapsed": elapsed,
+                "created_at": self.created_at,
+                "started_at": self.started_at,
+                "finished_at": self.finished_at,
+                "elapsed": render_elapsed,        # render time (started → done)
+                "total_elapsed": total_elapsed,   # incl. queue wait
+                "queue_wait": queue_wait,
             }
 
 
@@ -1609,10 +1632,15 @@ def render_generating():
         )
 
     with right:
-        elapsed = int(snap["elapsed"])
         dots = "." * ((int(time.time() * 2) % 3) + 1)
         queued = snap["status"] == "QUEUED"
         headline = "In&nbsp;the&nbsp;queue" if queued else "Rendering"
+        pct = int(round(snap["progress"] * 100))
+        # While queued the render clock hasn't started, so show the wait;
+        # once running, show the live render time.
+        big_clock = fmt_mmss(snap["queue_wait"] if queued else snap["elapsed"])
+        big_label = "WAITING" if queued else "ELAPSED"
+
         st.markdown(
             f'<h2 style="font-family:Cormorant Garamond,serif;font-weight:500;'
             f'font-size:4.2rem;line-height:0.95;margin:0">{headline}'
@@ -1621,15 +1649,34 @@ def render_generating():
         )
         st.markdown(
             f'<div style="margin-top:20px;display:flex;align-items:baseline;gap:18px">'
-            f'  <div class="mono">ELAPSED</div>'
-            f'  <div style="font-family:JetBrains Mono,monospace;font-size:2.2rem;'
-            f'font-weight:500;color:{BP_BLUE};letter-spacing:0.04em">'
-            f'{elapsed//60:02d}:{elapsed%60:02d}</div>'
-            f'  <div class="mono" style="margin-left:auto;color:{sig}">{snap["status"]}</div>'
+            f'  <div class="mono">{big_label}</div>'
+            f'  <div style="font-family:JetBrains Mono,monospace;font-size:2.6rem;'
+            f'font-weight:500;color:{BP_BLUE};letter-spacing:0.04em">{big_clock}</div>'
+            f'  <div class="mono" style="margin-left:auto;color:{sig}">● {snap["status"]}</div>'
             f'</div>',
             unsafe_allow_html=True,
         )
-        st.markdown("<div style='height:20px'></div>", unsafe_allow_html=True)
+        # Secondary timing line: total since submission + start time.
+        st.markdown(
+            f'<div style="margin-top:6px;display:flex;gap:26px;flex-wrap:wrap">'
+            f'  <div class="mono" style="color:#7e7869">TOTAL · '
+            f'<span style="color:#cfc9bd">{fmt_mmss(snap["total_elapsed"])}</span></div>'
+            f'  <div class="mono" style="color:#7e7869">SUBMITTED · '
+            f'<span style="color:#cfc9bd">{fmt_clock(snap["created_at"])}</span></div>'
+            f'  <div class="mono" style="color:#7e7869">STARTED · '
+            f'<span style="color:#cfc9bd">{fmt_clock(snap["started_at"])}</span></div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
+
+        st.markdown("<div style='height:22px'></div>", unsafe_allow_html=True)
+        st.markdown(
+            f'<div style="display:flex;justify-content:space-between;margin-bottom:8px">'
+            f'  <div class="mono">PROGRESS</div>'
+            f'  <div class="mono" style="color:{BP_BLUE}">{pct:02d}%</div>'
+            f'</div>',
+            unsafe_allow_html=True,
+        )
         st.progress(snap["progress"])
         st.markdown(
             f'<div class="mono" style="margin-top:12px;color:#9a9488">'
@@ -1698,6 +1745,39 @@ def render_result():
             f'<div class="mono" style="text-align:right;color:{sc}">● {stt}</div>'
             f'<div class="mono" style="text-align:right;margin-top:4px">'
             f'00:15 · {RESOLUTION.upper()} · 9:16</div>',
+            unsafe_allow_html=True,
+        )
+
+    # ── Render timing strip ───────────────────────────────────────
+    if snap["status"] in ("DONE", "FAILED"):
+        stat_color = "#7BC47F" if is_done else "#FF6B6B"
+        st.markdown(
+            f'<div style="margin-top:22px;display:flex;gap:0;flex-wrap:wrap;'
+            f'border:1px solid rgba(237,235,228,0.10);border-radius:8px;overflow:hidden">'
+            f'  <div style="flex:1;min-width:150px;padding:16px 20px;'
+            f'border-right:1px solid rgba(237,235,228,0.08)">'
+            f'    <div class="mono" style="color:#7e7869">RENDER TIME</div>'
+            f'    <div style="font-family:JetBrains Mono,monospace;font-size:1.7rem;'
+            f'font-weight:500;color:{stat_color};margin-top:6px">{fmt_mmss(snap["elapsed"])}</div>'
+            f'  </div>'
+            f'  <div style="flex:1;min-width:150px;padding:16px 20px;'
+            f'border-right:1px solid rgba(237,235,228,0.08)">'
+            f'    <div class="mono" style="color:#7e7869">QUEUE WAIT</div>'
+            f'    <div style="font-family:JetBrains Mono,monospace;font-size:1.7rem;'
+            f'font-weight:500;color:#cfc9bd;margin-top:6px">{fmt_mmss(snap["queue_wait"])}</div>'
+            f'  </div>'
+            f'  <div style="flex:1;min-width:150px;padding:16px 20px;'
+            f'border-right:1px solid rgba(237,235,228,0.08)">'
+            f'    <div class="mono" style="color:#7e7869">TOTAL</div>'
+            f'    <div style="font-family:JetBrains Mono,monospace;font-size:1.7rem;'
+            f'font-weight:500;color:#cfc9bd;margin-top:6px">{fmt_mmss(snap["total_elapsed"])}</div>'
+            f'  </div>'
+            f'  <div style="flex:1;min-width:150px;padding:16px 20px">'
+            f'    <div class="mono" style="color:#7e7869">FINISHED AT</div>'
+            f'    <div style="font-family:JetBrains Mono,monospace;font-size:1.7rem;'
+            f'font-weight:500;color:#cfc9bd;margin-top:6px">{fmt_clock(snap["finished_at"])}</div>'
+            f'  </div>'
+            f'</div>',
             unsafe_allow_html=True,
         )
 
