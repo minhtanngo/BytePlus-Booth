@@ -98,6 +98,12 @@ BP_BLUE_SOFT = "#5B93FF"
 # THEMES — four vibrant 15-second worlds; the customer chooses ONE
 # ──────────────────────────────────────────────────────────
 PROMPT_FOOTER = (
+    " IDENTITY LOCK: the main character must be the exact same person as in "
+    "[Image 1] in every single shot — identical face, same facial features, "
+    "face shape, eyes, nose, mouth, skin tone and hair. Preserve the real "
+    "likeness of [Image 1]; do not beautify, stylise, age, or change the face. "
+    "Keep the face clearly visible, evenly lit, sharp and instantly "
+    "recognisable as [Image 1] in close-ups. "
     "no copyrighted BGM sound, no recognizable melodies, no "
     "famous film themes, no popular songs, no lyrics in any language. Use "
     "only original sound design and an original generic score (synths, "
@@ -125,33 +131,37 @@ THEMES: dict[str, dict[str, Any]] = {
         "keywords": ["CYBERPUNK", "NEON", "SPEED", "RACE"],
         "prompt": _p(
             "Cinematic cyberpunk night street-racing sequence, vertical 9:16, "
-            "photorealistic, ultra-dynamic, intense motion blur, high-contrast "
-            "neon reflections, wet asphalt mirroring magenta and cyan signs, "
-            "Fast-and-Furious energy, extreme sense of speed, 15 seconds. "
-            "The main character is the person in [Image 1]; keep [Image 1]'s "
-            "face, identity and likeness consistent in every shot. [Image 1] is "
-            "the driver, wearing a sleek black racing jacket with subtle cyan trim. "
-            "Shot 1, 0-4s: interior close-up on [Image 1] gripping the steering "
-            "wheel of a glowing supercar, dashboard light painting cyan and "
-            "magenta across [Image 1]'s face, eyes locked forward with intense "
-            "focus, breath held, rain beading on the windshield, neon city "
-            "blurred beyond the glass. "
+            "photorealistic, ultra-dynamic, high-contrast neon reflections, wet "
+            "asphalt mirroring magenta and cyan signs, Fast-and-Furious energy, "
+            "extreme sense of speed — apply motion blur to the environment ONLY; "
+            "the driver's face always stays sharp, in focus and clearly lit, "
+            "15 seconds. The driver is the exact same person as in [Image 1] — "
+            "preserve [Image 1]'s real face and identical facial features in "
+            "every shot, do not restyle or beautify the face, keep it clearly "
+            "visible and recognisable. [Image 1] wears a sleek black racing "
+            "jacket with subtle cyan trim. "
+            "Shot 1, 0-4s: open on a clean, well-lit interior close-up of "
+            "[Image 1]'s face behind the wheel of a glowing supercar — face "
+            "fully recognisable and matching [Image 1], soft even dashboard glow "
+            "(no heavy colour cast on the face), calm focused eyes, rain beading "
+            "on the windshield, neon city softly blurred beyond the glass. "
             "Shot 2, 4-7s: over-the-shoulder on [Image 1], the road ahead "
-            "stretches into a tunnel of neon signage and tail-lights, engine "
-            "vibration building, then an extreme close-up of [Image 1]'s finger "
-            "slamming the glowing NOS button. "
-            "Shot 3, 7-11s: explosive acceleration — the camera snaps to an "
-            "exterior side-tracking shot as the car launches forward, a violent "
-            "surge of speed, light trails smearing into long ribbons, then an "
-            "ultra-low ground shot near the wet asphalt, wheels spinning, the "
-            "environment streaking past in pure velocity. "
-            "Shot 4, 11-15s: whip-pan back to [Image 1], a fierce confident "
-            "half-smile lit by the dashboard glow, the city lights exploding into "
-            "bokeh behind through the rear window; hold the last 1.5 seconds on "
-            "[Image 1]'s face, neon reflections sliding across it, then a hard "
-            "cut to black. "
+            "stretches into a tunnel of neon signage and tail-lights, then an "
+            "extreme close-up of [Image 1]'s finger slamming the glowing NOS "
+            "button. "
+            "Shot 3, 7-11s: explosive acceleration — exterior side-tracking shot "
+            "as the car launches forward, a violent surge of speed, light trails "
+            "smearing into long ribbons, then an ultra-low ground shot near the "
+            "wet asphalt, wheels spinning, the environment streaking past in pure "
+            "velocity (no face in this shot). "
+            "Shot 4, 11-15s: whip-pan back to a clear, evenly-lit close-up of "
+            "[Image 1]'s face — a fierce confident half-smile, fully recognisable "
+            "as the same person in [Image 1], city lights as soft bokeh behind "
+            "through the rear window; hold the last 2 seconds on [Image 1]'s "
+            "sharp, clearly-lit face, then a hard cut to black. "
             "Aesthetic: glossy cinematic cyberpunk, deep blacks, electric cyan "
-            "and hot-magenta palette, anamorphic light flares, photorealistic. "
+            "and hot-magenta palette, anamorphic light flares, photorealistic; "
+            "faces always sharp, clean and true to [Image 1]. "
             "Audio: deep engine roar, turbo spool, NOS ignition hiss, tyre "
             "screech, sub-bass pulse, original driving synth-percussion score. no copyrighted BGM sound"
         ),
@@ -1984,29 +1994,67 @@ def render_gallery():
         )
         return
 
+    _ = refresh  # any button press reruns → fresh listing
+
+    def _name_of(tid: str) -> str:
+        return THEMES.get(tid, {}).get("name") or tid.replace("-", " ").upper()
+
+    # ── Filter by theme ───────────────────────────────────────────
+    present = sorted({f["theme_id"] for f in films}, key=_name_of)
+    options = ["All themes"] + present
+    fcol = st.columns([2, 4])
+    with fcol[0]:
+        choice = st.selectbox(
+            "Theme", options, key="gallery_theme",
+            format_func=lambda t: t if t == "All themes" else _name_of(t),
+            label_visibility="collapsed",
+        )
+    if choice != "All themes":
+        films = [f for f in films if f["theme_id"] == choice]
+
+    # ── Paginate (don't dump every player at once) ────────────────
+    PAGE_SIZE = 9
+    total = len(films)
+    pages = max(1, (total + PAGE_SIZE - 1) // PAGE_SIZE)
+    page = max(0, min(st.session_state.get("gallery_page", 0), pages - 1))
+    start = page * PAGE_SIZE
+    page_films = films[start:start + PAGE_SIZE]
+
     st.markdown(
-        f'<div class="mono" style="margin-top:18px;margin-bottom:8px;color:{BP_BLUE}">'
-        f'{len(films):02d} FILM{"S" if len(films) != 1 else ""}</div>',
+        f'<div class="mono" style="margin-top:14px;margin-bottom:8px;color:{BP_BLUE}">'
+        f'{total:02d} FILM{"S" if total != 1 else ""} · SHOWING '
+        f'{start + 1}–{start + len(page_films)} · PAGE {page + 1}/{pages}</div>',
         unsafe_allow_html=True,
     )
 
     PER_ROW = 3
-    for i in range(0, len(films), PER_ROW):
-        row = films[i:i + PER_ROW]
+    for i in range(0, len(page_films), PER_ROW):
         grid = st.columns(PER_ROW)
-        for col, film in zip(grid, row):
+        for col, film in zip(grid, page_films[i:i + PER_ROW]):
             with col:
                 t = THEMES.get(film["theme_id"], {})
-                name = t.get("name") or film["theme_id"].replace("-", " ").upper()
                 sig = t.get("signature", BP_BLUE)
                 st.markdown(
                     f'<div class="mono" style="color:{sig};margin-bottom:6px">'
-                    f'{t.get("code","")} {("· " + name) if t.get("code") else name}</div>',
+                    f'{t.get("code","")} {("· " + _name_of(film["theme_id"])) if t.get("code") else _name_of(film["theme_id"])}</div>',
                     unsafe_allow_html=True,
                 )
                 st.video(film["url"])
 
-    _ = refresh  # interaction triggers a rerun → fresh listing
+    # ── Page controls ─────────────────────────────────────────────
+    if pages > 1:
+        st.markdown("<div style='height:8px'></div>", unsafe_allow_html=True)
+        pcol = st.columns([1, 1, 4])
+        with pcol[0]:
+            if st.button("← Prev", key="gal_prev", type="secondary",
+                         use_container_width=True, disabled=page == 0):
+                st.session_state.gallery_page = page - 1
+                st.rerun()
+        with pcol[1]:
+            if st.button("Next →", key="gal_next", type="secondary",
+                         use_container_width=True, disabled=page >= pages - 1):
+                st.session_state.gallery_page = page + 1
+                st.rerun()
 
 
 def _reset_session():
