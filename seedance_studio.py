@@ -528,21 +528,17 @@ body::before {
 # ──────────────────────────────────────────────────────────
 # BRANDING
 # ──────────────────────────────────────────────────────────
+BYTEPLUS_LOGO_URL = (
+    "https://assets.byteplus.com/obj/byteplus-assets/navigation/byteplus_logo_footer.svg"
+)
+
+
 def byteplus_logo(height: int = 30) -> str:
-    fs = int(height * 0.66)
     return (
         f'<a href="?home=1" target="_self" title="Start over"'
         f'   style="text-decoration:none;cursor:pointer;display:inline-block">'
-        f'<div style="display:flex;align-items:center;gap:12px">'
-        f'  <svg width="{height}" height="{height}" viewBox="0 0 40 40" fill="none" '
-        f'       xmlns="http://www.w3.org/2000/svg">'
-        f'    <rect x="1" y="1" width="38" height="38" rx="9" fill="{BP_BLUE}"/>'
-        f'    <path d="M15 12 L29 20 L15 28 Z" fill="#FFFFFF"/>'
-        f'  </svg>'
-        f'  <span style="font-family:Inter,sans-serif;font-weight:700;'
-        f'font-size:{fs}px;letter-spacing:-0.01em;color:#FFFFFF">'
-        f'BytePlus</span>'
-        f'</div>'
+        f'  <img src="{BYTEPLUS_LOGO_URL}" alt="BytePlus" '
+        f'       style="height:{height}px;width:auto;display:block" />'
         f'</a>'
     )
 
