@@ -689,6 +689,40 @@ def upload_bytes_to_tos(data: bytes, key: str, content_type: str) -> str:
         os.unlink(path)
 
 
+def list_final_videos(limit: int = 120) -> list[dict]:
+    """Every finished film, read straight from TOS so the gallery survives app
+    restarts and link expiry. Returns newest-first:
+    [{"theme_id": str, "url": fresh-presigned, "modified": datetime|None}]."""
+    import tos as _tos
+    client = _tos_client()
+    prefix = "seedance/final/"
+
+    raw: list[tuple[str, Any]] = []
+    token = None
+    while True:
+        out = client.list_objects_type2(
+            TOS_BUCKET, prefix=prefix, max_keys=1000, continuation_token=token
+        )
+        for o in (out.contents or []):
+            if o.key.endswith(".mp4"):
+                raw.append((o.key, getattr(o, "last_modified", None)))
+        if getattr(out, "is_truncated", False) and getattr(out, "next_continuation_token", ""):
+            token = out.next_continuation_token
+        else:
+            break
+
+    raw.sort(key=lambda x: (x[1] is not None, x[1]), reverse=True)
+    films: list[dict] = []
+    for key, modified in raw[:limit]:
+        fname = key[len(prefix):]
+        theme_id = fname.rsplit("_", 1)[0]          # "{theme-id}_{uuid}.mp4"
+        signed = client.pre_signed_url(
+            _tos.HttpMethodType.Http_Method_Get, TOS_BUCKET, key, expires=86400,
+        ).signed_url
+        films.append({"theme_id": theme_id, "url": signed, "modified": modified})
+    return films
+
+
 # ──────────────────────────────────────────────────────────
 # MODELARK ASSET LIBRARY  (AK/SK signing UNCHANGED)
 # ──────────────────────────────────────────────────────────
@@ -1252,10 +1286,14 @@ def render_welcome():
 
     st.markdown("<div style='height:44px'></div>", unsafe_allow_html=True)
 
-    cols = st.columns([1.3, 5])
+    cols = st.columns([1.3, 1.6, 4])
     with cols[0]:
         if st.button("Begin →", key="begin", type="primary", use_container_width=True):
             goto("capture")
+    with cols[1]:
+        if st.button("View gallery →", key="welcome_gallery", type="secondary",
+                     use_container_width=True):
+            goto("gallery")
 
     if DEMO_MODE:
         st.markdown(
@@ -1836,8 +1874,12 @@ def render_result():
         _render_film_card(snap["theme_id"], snap)
 
     st.markdown("<div style='height:24px'></div>", unsafe_allow_html=True)
-    bcols = st.columns([3, 1.6])
+    bcols = st.columns([2.8, 1.6, 1.6])
     with bcols[1]:
+        if st.button("View gallery →", key="res_gallery", type="secondary",
+                     use_container_width=True):
+            goto("gallery")
+    with bcols[2]:
         if st.button("Make another →", key="restart", type="primary",
                      use_container_width=True):
             _reset_session()
@@ -1895,6 +1937,75 @@ def _render_film_card(tid: str, snap: dict | None):
         )
 
     st.markdown("<div style='height:28px'></div>", unsafe_allow_html=True)
+
+
+# ──────────────────────────────────────────────────────────
+# SCREEN — GALLERY (every film ever made, for client viewing)
+# ──────────────────────────────────────────────────────────
+def render_gallery():
+    render_header(None)
+
+    cols = st.columns([6, 1.4])
+    with cols[1]:
+        if st.button("← Back", key="gal_back", type="secondary",
+                     use_container_width=True):
+            goto("welcome")
+
+    st.markdown(
+        '<div class="mono" style="margin-top:8px">THE GALLERY</div>'
+        '<h2 style="font-size:4.2rem;line-height:1;margin:8px 0 0 0">Every film created</h2>'
+        '<p class="serif-body" style="max-width:560px;margin-top:1rem">'
+        "Every short film generated at this booth, ready to play.</p>",
+        unsafe_allow_html=True,
+    )
+
+    if DEMO_MODE:
+        st.info("The gallery shows real films once generation is enabled "
+                "(set ARK_API_KEY + TOS_* env vars).")
+        return
+
+    rcol = st.columns([6, 1.4])
+    with rcol[1]:
+        refresh = st.button("↻ Refresh", key="gal_refresh", type="secondary",
+                            use_container_width=True)
+
+    try:
+        films = list_final_videos()
+    except Exception as e:
+        st.error(f"Couldn't load the gallery from storage: {e}")
+        return
+
+    if not films:
+        st.markdown(
+            '<div class="serif-italic" style="margin-top:28px;color:#9a9488;font-size:1.2rem">'
+            "No films yet — the first one you create will appear here.</div>",
+            unsafe_allow_html=True,
+        )
+        return
+
+    st.markdown(
+        f'<div class="mono" style="margin-top:18px;margin-bottom:8px;color:{BP_BLUE}">'
+        f'{len(films):02d} FILM{"S" if len(films) != 1 else ""}</div>',
+        unsafe_allow_html=True,
+    )
+
+    PER_ROW = 3
+    for i in range(0, len(films), PER_ROW):
+        row = films[i:i + PER_ROW]
+        grid = st.columns(PER_ROW)
+        for col, film in zip(grid, row):
+            with col:
+                t = THEMES.get(film["theme_id"], {})
+                name = t.get("name") or film["theme_id"].replace("-", " ").upper()
+                sig = t.get("signature", BP_BLUE)
+                st.markdown(
+                    f'<div class="mono" style="color:{sig};margin-bottom:6px">'
+                    f'{t.get("code","")} {("· " + name) if t.get("code") else name}</div>',
+                    unsafe_allow_html=True,
+                )
+                st.video(film["url"])
+
+    _ = refresh  # interaction triggers a rerun → fresh listing
 
 
 def _reset_session():
@@ -1955,6 +2066,7 @@ def main():
         "details": render_details,
         "generating": render_generating,
         "result": render_result,
+        "gallery": render_gallery,
     }[st.session_state.step]()
 
 
