@@ -649,6 +649,18 @@ def upload_bytes_to_tos(data: bytes, key: str, content_type: str) -> str:
         os.unlink(path)
 
 
+def presigned_download_url(key: str, filename: str = "seedance_film.mp4",
+                           expires: int = 86400) -> str:
+    """Presigned GET URL that forces a file download (attachment) — needed so
+    the email button saves the .mp4 on phones instead of just playing it."""
+    import tos as _tos
+    client = _tos_client()
+    return client.pre_signed_url(
+        _tos.HttpMethodType.Http_Method_Get, TOS_BUCKET, key, expires=expires,
+        query={"response-content-disposition": f'attachment; filename="{filename}"'},
+    ).signed_url
+
+
 def add_watermark(in_path: str, out_path: str) -> str:
     """Burn the BytePlus logo into the bottom-right of the clip with ffmpeg.
     Falls back to the original clip if anything goes wrong (never fails a job)."""
@@ -905,7 +917,7 @@ def is_valid_phone(num: str) -> bool:
 # EMAIL DELIVERY  (multi-film collection)
 # ──────────────────────────────────────────────────────────
 def send_films_email(to_email: str, name: str,
-                     films: list[tuple[dict, str]]) -> tuple[bool, str]:
+                     films: list[tuple[dict, str, str]]) -> tuple[bool, str]:
     if not EMAIL_ENABLED:
         return False, "Email is not configured on this server."
     if not is_valid_email(to_email):
@@ -919,14 +931,15 @@ def send_films_email(to_email: str, name: str,
 
     text_lines = [f"Hi {greeting},", "",
                   f"Your {n} short film{'s' if n != 1 else ''} are ready to watch."]
-    for theme, url in films:
-        text_lines += ["", f"{theme['name']} — {theme['tagline']}", url]
+    for theme, watch_url, dl_url in films:
+        text_lines += ["", f"{theme['name']} — {theme['tagline']}",
+                       f"Watch: {watch_url}", f"Download: {dl_url}"]
     text_lines += ["", "Each film: 15 seconds · 9:16 · powered by BytePlus Seedance 2.0",
                    "", "— Seedance Studio · BytePlus"]
     text_body = "\n".join(text_lines)
 
     cards = ""
-    for theme, url in films:
+    for theme, watch_url, dl_url in films:
         sig = theme["signature"]
         cards += f"""
         <tr><td style="padding:0 0 18px 0">
@@ -942,11 +955,17 @@ def send_films_email(to_email: str, name: str,
               <div style="font-family:Georgia,serif;font-style:italic;font-size:15px;
                           color:#b9b3a6;margin-top:4px">{theme['tagline']}</div>
               <div style="margin-top:16px">
-                <a href="{url}" target="_blank"
+                <a href="{dl_url}" target="_blank"
                    style="display:inline-block;background:{BP_BLUE};color:#FFFFFF;
                           padding:12px 24px;font-family:'Courier New',monospace;
                           font-size:12px;letter-spacing:0.2em;text-transform:uppercase;
-                          text-decoration:none;border-radius:4px">Watch &amp; download &rarr;</a>
+                          text-decoration:none;border-radius:4px">&darr; Download .mp4</a>
+                <a href="{watch_url}" target="_blank"
+                   style="display:inline-block;margin-left:10px;background:transparent;
+                          color:#cfc9bd;border:1px solid rgba(237,235,228,0.25);
+                          padding:11px 22px;font-family:'Courier New',monospace;
+                          font-size:12px;letter-spacing:0.2em;text-transform:uppercase;
+                          text-decoration:none;border-radius:4px">Watch &rarr;</a>
               </div>
             </td></tr>
           </table>
@@ -1059,6 +1078,7 @@ class Job:
     step: str = "WAITING IN QUEUE"
     progress: float = 0.0
     final_url: str | None = None
+    final_key: str | None = None
     error: str | None = None
     email_status: str = "PENDING"   # PENDING | SENT | SKIPPED | FAILED: <msg>
     created_at: float = field(default_factory=time.time)
@@ -1211,7 +1231,7 @@ class JobQueue:
             final_url = upload_to_tos(clip_path, mkey, content_type="video/mp4")
 
             job.set(status="DONE", step="COMPLETE", progress=1.0,
-                    final_url=final_url, finished_at=time.time())
+                    final_url=final_url, final_key=mkey, finished_at=time.time())
         except Exception as e:
             job.set(status="FAILED", step=f"ERROR: {type(e).__name__}",
                     error=str(e), finished_at=time.time())
@@ -1223,9 +1243,18 @@ class JobQueue:
             job.set(email_status="SKIPPED")
             return
         try:
+            theme = THEMES[job.theme_id]
+            fname = f"{theme['name'].replace(' ', '_')}_BytePlus_Seedance.mp4"
+            try:
+                download_url = (
+                    presigned_download_url(job.final_key, filename=fname)
+                    if job.final_key else job.final_url
+                )
+            except Exception:
+                download_url = job.final_url
             ok, msg = send_films_email(
                 job.customer_email, job.customer_name,
-                [(THEMES[job.theme_id], job.final_url)],
+                [(theme, job.final_url, download_url)],
             )
             job.set(email_status="SENT" if ok else f"FAILED: {msg}")
         except Exception as e:
