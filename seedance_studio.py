@@ -33,6 +33,7 @@ import json
 import os
 import re
 import smtplib
+import subprocess
 import tempfile
 import threading
 import time
@@ -70,6 +71,16 @@ RESOLUTION = "720p"
 POLL_INTERVAL = 5
 POLL_TIMEOUT = 1000
 
+# BytePlus logo overlay burned into each finished film (bottom-right) via ffmpeg.
+WATERMARK_PATH = str(Path(__file__).parent / "byteplus_watermark.png")
+WATERMARK_ENABLED = (
+    os.environ.get("WATERMARK", "1").lower() not in ("0", "false", "no")
+    and os.path.exists(WATERMARK_PATH)
+)
+WATERMARK_WIDTH = int(os.environ.get("WATERMARK_WIDTH", "220"))  # px, scaled by aspect
+WATERMARK_OPACITY = float(os.environ.get("WATERMARK_OPACITY", "0.85"))
+WATERMARK_MARGIN = int(os.environ.get("WATERMARK_MARGIN", "28"))  # px from edges
+
 ARK_ASSET_GROUP_ID = os.environ.get("ARK_ASSET_GROUP_ID", "")
 ARK_AK = os.environ.get("ARK_AK", "")
 ARK_SK = os.environ.get("ARK_SK", "")
@@ -98,17 +109,12 @@ BP_BLUE_SOFT = "#5B93FF"
 # THEMES — four vibrant 15-second worlds; the customer chooses ONE
 # ──────────────────────────────────────────────────────────
 PROMPT_FOOTER = (
-    " IDENTITY LOCK: the main character must be the exact same person as in "
-    "[Image 1] in every single shot — identical face, same facial features, "
-    "face shape, eyes, nose, mouth, skin tone and hair. Preserve the real "
-    "likeness of [Image 1]; do not beautify, stylise, age, or change the face. "
-    "Keep the face clearly visible, evenly lit, sharp and instantly "
-    "recognisable as [Image 1] in close-ups. "
-    "no copyrighted BGM sound, no recognizable melodies, no "
-    "famous film themes, no popular songs, no lyrics in any language. Use "
-    "only original sound design and an original generic score (synths, "
-    "percussion, orchestral or piano swells) with no recognizable melodic "
-    "line. No on-screen text, watermarks, logos, or subtitles."
+    " Keep the main character the exact same person as in [Image 1] in every "
+    "shot — same face and features, clearly lit and recognisable; do not "
+    "restyle or beautify the face. Show only ONE person on screen at all times "
+    "— never duplicate, clone or mirror the character. No on-screen text, "
+    "watermarks, logos or subtitles. Original score and sound design only — no "
+    "recognisable melodies, songs, lyrics or famous film music."
 )
 
 def _p(text: str) -> str:
@@ -130,40 +136,22 @@ THEMES: dict[str, dict[str, Any]] = {
         "paper": "#05060B",
         "keywords": ["CYBERPUNK", "NEON", "SPEED", "RACE"],
         "prompt": _p(
-            "Cinematic cyberpunk night street-racing sequence, vertical 9:16, "
-            "photorealistic, ultra-dynamic, high-contrast neon reflections, wet "
-            "asphalt mirroring magenta and cyan signs, Fast-and-Furious energy, "
-            "extreme sense of speed — apply motion blur to the environment ONLY; "
-            "the driver's face always stays sharp, in focus and clearly lit, "
-            "15 seconds. The driver is the exact same person as in [Image 1] — "
-            "preserve [Image 1]'s real face and identical facial features in "
-            "every shot, do not restyle or beautify the face, keep it clearly "
-            "visible and recognisable. [Image 1] wears a sleek black racing "
-            "jacket with subtle cyan trim. "
-            "Shot 1, 0-4s: open on a clean, well-lit interior close-up of "
-            "[Image 1]'s face behind the wheel of a glowing supercar — face "
-            "fully recognisable and matching [Image 1], soft even dashboard glow "
-            "(no heavy colour cast on the face), calm focused eyes, rain beading "
-            "on the windshield, neon city softly blurred beyond the glass. "
-            "Shot 2, 4-7s: over-the-shoulder on [Image 1], the road ahead "
-            "stretches into a tunnel of neon signage and tail-lights, then an "
-            "extreme close-up of [Image 1]'s finger slamming the glowing NOS "
-            "button. "
-            "Shot 3, 7-11s: explosive acceleration — exterior side-tracking shot "
-            "as the car launches forward, a violent surge of speed, light trails "
-            "smearing into long ribbons, then an ultra-low ground shot near the "
-            "wet asphalt, wheels spinning, the environment streaking past in pure "
-            "velocity (no face in this shot). "
-            "Shot 4, 11-15s: whip-pan back to a clear, evenly-lit close-up of "
-            "[Image 1]'s face — a fierce confident half-smile, fully recognisable "
-            "as the same person in [Image 1], city lights as soft bokeh behind "
-            "through the rear window; hold the last 2 seconds on [Image 1]'s "
-            "sharp, clearly-lit face, then a hard cut to black. "
-            "Aesthetic: glossy cinematic cyberpunk, deep blacks, electric cyan "
-            "and hot-magenta palette, anamorphic light flares, photorealistic; "
-            "faces always sharp, clean and true to [Image 1]. "
-            "Audio: deep engine roar, turbo spool, NOS ignition hiss, tyre "
-            "screech, sub-bass pulse, original driving synth-percussion score. no copyrighted BGM sound"
+            "Cinematic cyberpunk night street race, vertical 9:16, "
+            "photorealistic, neon-soaked, strong sense of speed, 15 seconds. The "
+            "single driver is [Image 1], wearing a black racing jacket with cyan "
+            "trim. Motion-blur the environment but keep the face sharp and "
+            "clearly lit. "
+            "Shot 1 (0-5s): clean close-up of [Image 1] behind the wheel of a "
+            "glowing supercar, calm focused eyes, soft dashboard light, neon city "
+            "blurred beyond the windshield. "
+            "Shot 2 (5-10s): exterior shot of the car racing through a tunnel of "
+            "neon signs and tail-lights, light trails streaking past (no face). "
+            "Shot 3 (10-15s): cut back to a clear close-up of [Image 1] with a "
+            "confident half-smile, city lights as soft bokeh behind, hold on the "
+            "face, then cut to black. "
+            "Look: glossy cyberpunk, deep blacks, cyan and magenta, "
+            "photorealistic. Audio: engine roar, turbo, NOS hiss, tyre screech, "
+            "driving synth-percussion."
         ),
     },
 
@@ -180,35 +168,20 @@ THEMES: dict[str, dict[str, Any]] = {
         "keywords": ["ORBITAL", "HOLOGRAM", "SUMMIT", "SCI-FI"],
         "prompt": _p(
             "Cinematic sci-fi executive keynote aboard an orbital space station, "
-            "vertical 9:16, 8K ultra-clear, photorealistic, sleek futuristic "
-            "production design, cool glass-and-chrome tones lit by holographic "
-            "blue light, 15 seconds. "
-            "The main character is the person in [Image 1]; keep [Image 1]'s "
-            "face, identity and likeness consistent in every shot. [Image 1] is "
-            "the keynote speaker in a sharp modern business suit. "
-            "Shot 1, 0-5s: a slow hero push-in as [Image 1] walks confidently "
-            "across a curved glass conference deck; through the vast window "
-            "behind, planet Earth turns slowly in space, city lights glittering "
-            "on the night side, starlight reflecting across the polished floor. "
-            "Shot 2, 5-9s: [Image 1] raises a hand and a towering holographic "
-            "interface blooms into the air — translucent 3D charts, rotating "
-            "globes and streams of data unfolding around [Image 1]; rack focus "
-            "to a close-up of [Image 1]'s composed, visionary face lit blue by "
-            "the holograms. "
-            "Shot 3, 9-13s: with a confident gesture from [Image 1], a glowing "
-            "product concept materializes mid-air and assembles itself in a "
-            "shower of light particles; the camera arcs around [Image 1] as the "
-            "holograms ripple outward over an audience of silhouettes below. "
-            "Shot 4, 13-15s: low-angle hero shot of [Image 1] standing tall, "
-            "holographic data and Earth framed behind, a calm assured smile; "
-            "hold the final 1.5 seconds on [Image 1]'s face as the holograms "
-            "reflect in their eyes, then a clean cut to white. "
-            "Aesthetic: premium sci-fi keynote realism, glass, chrome and "
-            "holographic cyan-blue with warm white key light, volumetric light, "
-            "photorealistic. "
-            "Audio: soft station ambience, holographic interface chimes and "
-            "whooshes, a swelling original cinematic synth-orchestral score, a "
-            "distant applause swell. no copyrighted BGM sound"
+            "vertical 9:16, 8K, photorealistic, sleek glass-and-chrome design "
+            "lit by holographic blue light, 15 seconds. The single speaker is "
+            "[Image 1], in a sharp modern business suit. "
+            "Shot 1 (0-5s): [Image 1] walks confidently across a curved glass "
+            "deck; through the window behind, Earth turns slowly in space. "
+            "Shot 2 (5-10s): [Image 1] raises a hand and glowing holographic "
+            "charts and a rotating globe bloom in the air; clear close-up of "
+            "[Image 1]'s face lit blue by the holograms. "
+            "Shot 3 (10-15s): low-angle hero shot of [Image 1] standing tall "
+            "with holograms and Earth behind, a calm assured smile; hold on the "
+            "face, then a clean cut to white. "
+            "Look: premium sci-fi, glass, chrome, holographic cyan-blue, "
+            "photorealistic. Audio: soft station ambience, holographic chimes "
+            "and whooshes, swelling cinematic synth-orchestral score."
         ),
     },
 
@@ -224,36 +197,23 @@ THEMES: dict[str, dict[str, Any]] = {
         "paper": "#060810",
         "keywords": ["ANIME", "ELEMENTAL", "VFX", "EPIC"],
         "prompt": _p(
-            "Hollywood live-action anime-adaptation film, dark samurai style, "
-            "vertical 9:16, 4K ultra-clear, explosive particle light effects, "
-            "fast cuts, no gore, 15 seconds. "
-            "The main character is the person in [Image 1]; keep [Image 1]'s "
-            "face, identity and likeness consistent in every shot. [Image 1] is "
-            "a lone elemental swordmaster wearing a green-and-black checkered "
-            "haori over dark training clothes, gripping a katana, in a misty "
-            "moonlit forest with muddy ground and leaves drifting down. "
-            "Shot 1, 0-5s: medium shot of [Image 1] lowering their center of "
-            "gravity under the moon, both hands on the hilt; [Image 1] inhales "
-            "and the air visibly solidifies. As the blade draws, a giant blue "
-            "water dragon of high-pressure water condenses from thin air and "
-            "spirals around [Image 1] and the blade, roaring with the sound of "
-            "rushing water, splashing light into the dark forest. "
-            "Shot 2, 5-10s: dynamic low tracking shot — [Image 1] explodes "
-            "forward, the ground bursting beneath them, transforming the dash "
-            "into a dazzling golden-lightning afterimage that zig-zags between "
-            "the trees at impossible speed, golden electric arcs and scorched "
-            "leaves trailing behind; quick cut to a close-up of [Image 1]'s "
-            "focused face, rain and light streaking past. "
-            "Shot 3, 10-15s: [Image 1] swings the blade down — the blue water "
-            "dragon and the golden lightning collide in the center of frame in a "
-            "massive water-thunder energy storm that blasts outward, trees "
-            "bending, mist and light flaring; [Image 1] lands in a low final "
-            "stance, blade extended, lit blue and gold; hold the last 1.5 "
-            "seconds on [Image 1]'s calm, resolute face, then cut to black. "
-            "Aesthetic: cinematic anime realism, electric blue and molten gold on "
-            "moonlit teal, volumetric mist, photorealistic VFX. "
-            "Audio: rushing water roar, crackling electricity, blade ring, deep "
-            "impact boom, original epic percussive score swell. no copyrighted BGM sound"
+            "Hollywood live-action anime style, dark samurai mood, vertical "
+            "9:16, 4K, dramatic particle effects, no gore, 15 seconds. The single "
+            "warrior is [Image 1], in a green-and-black checkered haori, holding "
+            "a katana in a misty moonlit forest. "
+            "Shot 1 (0-5s): [Image 1] lowers into a stance, both hands on the "
+            "hilt; as the blade draws, a giant blue water dragon spirals around "
+            "the warrior, roaring with rushing water. "
+            "Shot 2 (5-10s): [Image 1] dashes forward in a streak of golden "
+            "lightning between the trees; quick clear close-up of [Image 1]'s "
+            "focused face. "
+            "Shot 3 (10-15s): [Image 1] swings the blade down — water dragon and "
+            "golden lightning collide in a burst of light; the warrior lands in a "
+            "low stance, lit blue and gold; hold on the calm face, then cut to "
+            "black. "
+            "Look: cinematic anime realism, electric blue and gold, volumetric "
+            "mist, photorealistic VFX. Audio: rushing water, crackling "
+            "lightning, blade ring, deep impact, epic percussive score."
         ),
     },
 
@@ -269,35 +229,24 @@ THEMES: dict[str, dict[str, Any]] = {
         "paper": "#0A0705",
         "keywords": ["FESTIVAL", "LANTERNS", "FIREWORKS", "JOY"],
         "prompt": _p(
-            "Vibrant cinematic lantern-festival music-video sequence, vertical "
-            "9:16, ultra-realistic, warm and joyful, immersive handheld energy, "
-            "rich golden-amber and crimson palette, 15 seconds. "
-            "The main character is the person in [Image 1]; keep [Image 1]'s "
-            "face, identity and likeness consistent in every shot. [Image 1] "
-            "glows with delight in elegant festive attire at a beautiful old "
-            "riverside town at night strung with hundreds of glowing silk "
-            "lanterns reflected on dark water. "
-            "Shot 1, 0-5s: warm wide shot gliding toward [Image 1] standing on a "
-            "stone bridge over the lantern-lit river, crowds and floating "
-            "lanterns all around, soft bokeh of countless flames, a gentle "
-            "breeze lifting [Image 1]'s hair, a bright genuine smile on their face. "
-            "Shot 2, 5-10s: close-medium on [Image 1]'s face, hands cupping a "
-            "single glowing paper lantern; [Image 1] lifts it and releases it — "
-            "slow motion as it rises, golden light warming [Image 1]'s eyes, "
-            "reflections of lantern flames dancing across their skin, eyes "
-            "following it up. "
-            "Shot 3, 10-15s: the camera tilts up with the rising lantern to "
-            "reveal a sky filling with hundreds of floating lanterns, then "
-            "fireworks bloom in gold and crimson above the river; cut back to a "
-            "low-angle hero shot of [Image 1] laughing with pure joy, arms "
-            "slightly open, fireworks reflected in their eyes and on the water "
-            "behind; hold the final 1.5 seconds on [Image 1]'s radiant face, "
-            "then a soft cut to warm light. "
-            "Aesthetic: lush festival realism, glowing amber lanterns, crimson and "
-            "gold fireworks, creamy bokeh, photorealistic, heart-warming. "
-            "Audio: distant festival crowd murmur, crackle and whoosh of "
-            "fireworks, water lapping, an uplifting original celebratory score "
-            "swell with no recognizable melody. no copyrighted BGM sound."
+            "Warm, joyful lantern-festival video, vertical 9:16, ultra-realistic, "
+            "golden-amber and crimson tones, 15 seconds. The single lead is "
+            "[Image 1], in elegant festive attire at an old riverside town at "
+            "night strung with glowing lanterns. "
+            "Shot 1 (0-5s): warm shot gliding toward [Image 1] on a stone bridge "
+            "over a lantern-lit river, floating lanterns and soft bokeh all "
+            "around, a bright genuine smile. "
+            "Shot 2 (5-10s): clear close-up of [Image 1] cupping a glowing paper "
+            "lantern, then releasing it; slow motion as it rises, golden light "
+            "warming the face. "
+            "Shot 3 (10-15s): the camera tilts up to a sky full of lanterns as "
+            "fireworks bloom in gold and crimson; cut back to [Image 1] laughing "
+            "with joy, fireworks reflected behind; hold on the radiant face, then "
+            "a soft cut to warm light. "
+            "Look: lush festival realism, glowing lanterns, gold and crimson "
+            "fireworks, creamy bokeh, photorealistic. Audio: distant festival "
+            "crowd, firework crackle and whoosh, water lapping, uplifting "
+            "celebratory score."
         ),
     },
 
@@ -698,6 +647,30 @@ def upload_bytes_to_tos(data: bytes, key: str, content_type: str) -> str:
         return upload_to_tos(path, key, content_type)
     finally:
         os.unlink(path)
+
+
+def add_watermark(in_path: str, out_path: str) -> str:
+    """Burn the BytePlus logo into the bottom-right of the clip with ffmpeg.
+    Falls back to the original clip if anything goes wrong (never fails a job)."""
+    if not WATERMARK_ENABLED:
+        return in_path
+    m = WATERMARK_MARGIN
+    filt = (
+        f"[1:v]format=rgba,colorchannelmixer=aa={WATERMARK_OPACITY},"
+        f"scale={WATERMARK_WIDTH}:-1[wm];"
+        f"[0:v][wm]overlay=W-w-{m}:H-h-{m}"
+    )
+    cmd = [
+        "ffmpeg", "-y", "-i", in_path, "-i", WATERMARK_PATH,
+        "-filter_complex", filt,
+        "-c:a", "copy", "-c:v", "libx264", "-preset", "veryfast",
+        "-crf", "20", "-movflags", "+faststart", out_path,
+    ]
+    try:
+        subprocess.run(cmd, check=True, capture_output=True, timeout=180)
+        return out_path
+    except Exception:
+        return in_path
 
 
 def list_final_videos(limit: int = 120) -> list[dict]:
@@ -1229,6 +1202,9 @@ class JobQueue:
             job.set(progress=0.90)
             clip_path = str(workdir / "film.mp4")
             download_url(video_url, clip_path)
+            if WATERMARK_ENABLED:
+                step("BRANDING")
+                clip_path = add_watermark(clip_path, str(workdir / "film_branded.mp4"))
             step("PUBLISHING")
             job.set(progress=0.95)
             mkey = f"seedance/final/{job.theme_id}_{uuid.uuid4().hex}.mp4"
