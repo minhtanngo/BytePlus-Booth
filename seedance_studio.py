@@ -534,11 +534,16 @@ BYTEPLUS_LOGO_URL = (
 
 
 def byteplus_logo(height: int = 30) -> str:
+    fs = int(height * 0.7)
     return (
         f'<a href="?home=1" target="_self" title="Start over"'
         f'   style="text-decoration:none;cursor:pointer;display:inline-block">'
+        f'<div style="display:flex;align-items:center;gap:12px">'
         f'  <img src="{BYTEPLUS_LOGO_URL}" alt="BytePlus" '
         f'       style="height:{height}px;width:auto;display:block" />'
+        f'  <span style="font-family:Inter,sans-serif;font-weight:700;'
+        f'font-size:{fs}px;letter-spacing:-0.01em;color:#FFFFFF">BytePlus</span>'
+        f'</div>'
         f'</a>'
     )
 
