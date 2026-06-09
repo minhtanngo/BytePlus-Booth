@@ -531,6 +531,8 @@ body::before {
 def byteplus_logo(height: int = 30) -> str:
     fs = int(height * 0.66)
     return (
+        f'<a href="?home=1" target="_self" title="Start over"'
+        f'   style="text-decoration:none;cursor:pointer;display:inline-block">'
         f'<div style="display:flex;align-items:center;gap:12px">'
         f'  <svg width="{height}" height="{height}" viewBox="0 0 40 40" fill="none" '
         f'       xmlns="http://www.w3.org/2000/svg">'
@@ -538,9 +540,10 @@ def byteplus_logo(height: int = 30) -> str:
         f'    <path d="M15 12 L29 20 L15 28 Z" fill="#FFFFFF"/>'
         f'  </svg>'
         f'  <span style="font-family:Inter,sans-serif;font-weight:700;'
-        f'font-size:{fs}px;letter-spacing:-0.01em;color:#F5F3EC">'
-        f'Byte<span style="color:{BP_BLUE}">Plus</span></span>'
+        f'font-size:{fs}px;letter-spacing:-0.01em;color:#FFFFFF">'
+        f'BytePlus</span>'
         f'</div>'
+        f'</a>'
     )
 
 
@@ -1919,6 +1922,18 @@ def main():
     )
     st.markdown(CSS, unsafe_allow_html=True)
     init_state()
+
+    # Clicking the BytePlus logo (href="?home=1") starts a fresh film.
+    try:
+        if st.query_params.get("home"):
+            for k in ("step", "photo_bytes", "photo_name", "photo_remote_url",
+                      "customer_name", "customer_phone", "customer_email",
+                      "theme_id", "job_id", "error", "detail_errors"):
+                st.session_state.pop(k, None)
+            st.query_params.clear()
+            init_state()
+    except Exception:
+        pass
 
     if not st.session_state.get("job_id"):
         try:
