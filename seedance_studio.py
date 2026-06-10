@@ -81,6 +81,12 @@ WATERMARK_WIDTH = int(os.environ.get("WATERMARK_WIDTH", "220"))  # px, scaled by
 WATERMARK_OPACITY = float(os.environ.get("WATERMARK_OPACITY", "0.85"))
 WATERMARK_MARGIN = int(os.environ.get("WATERMARK_MARGIN", "28"))  # px from edges
 
+# Customer lead capture — each form submission is appended to a CSV in TOS
+# (durable across reboots; Streamlit Cloud's local disk is wiped on restart).
+LEADS_KEY = os.environ.get("LEADS_KEY", "seedance/leads/customers.csv")
+LEADS_HEADER = ["timestamp", "name", "company", "job_title",
+                "phone", "email", "theme", "job_id"]
+
 ARK_ASSET_GROUP_ID = os.environ.get("ARK_ASSET_GROUP_ID", "")
 ARK_AK = os.environ.get("ARK_AK", "")
 ARK_SK = os.environ.get("ARK_SK", "")
@@ -417,22 +423,32 @@ h1, h2, h3, h4 {
 .stTabs [data-baseweb="tab-highlight"] { background:#2E72FF !important; }
 
 /* File uploader */
+[data-testid="stFileUploader"] { width: 100% !important; }
+[data-testid="stFileUploader"] * { box-sizing: border-box !important; }
 [data-testid="stFileUploader"] section {
     background: transparent !important;
     border: 1px dashed rgba(237,235,228,0.22) !important;
     border-radius: 6px !important;
-    padding: 3.4rem 2rem !important;
+    padding: 2rem 1.4rem !important;
+    display: flex !important;
+    flex-wrap: wrap !important;       /* button drops below text instead of overflowing */
+    align-items: center !important;
+    gap: 14px !important;
+    width: 100% !important;
+    overflow: hidden !important;
 }
 [data-testid="stFileUploader"] section:hover { border-color: #2E72FF !important; }
+[data-testid="stFileUploader"] section > div { min-width: 0 !important; flex: 1 1 160px !important; }
 [data-testid="stFileUploader"] section * {
     font-family: 'JetBrains Mono', monospace !important;
-    font-size: 11px !important; letter-spacing: 0.2em !important;
+    font-size: 11px !important; letter-spacing: 0.12em !important;
     text-transform: uppercase !important; color: #cfc9bd !important;
 }
 [data-testid="stFileUploader"] section button {
     background: transparent !important; color: #EDEBE4 !important;
     border: 1px solid rgba(237,235,228,0.3) !important; border-radius: 4px !important;
     box-shadow:none !important;
+    flex: 0 0 auto !important; white-space: nowrap !important; max-width: 100% !important;
 }
 [data-testid="stFileUploaderDropzoneInstructions"] svg { display: none; }
 
@@ -659,6 +675,56 @@ def presigned_download_url(key: str, filename: str = "seedance_film.mp4",
         _tos.HttpMethodType.Http_Method_Get, TOS_BUCKET, key, expires=expires,
         query={"response-content-disposition": f'attachment; filename="{filename}"'},
     ).signed_url
+
+
+_LEADS_LOCK = threading.Lock()
+
+
+def save_lead(job) -> None:
+    """Append one customer submission to a durable CSV in TOS. Best-effort —
+    any failure is swallowed so it never blocks the film flow."""
+    if DEMO_MODE or not TOS_BUCKET:
+        return
+    import csv
+    import io
+    row = {
+        "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "name": job.customer_name,
+        "company": job.customer_company,
+        "job_title": job.customer_title,
+        "phone": job.customer_phone,
+        "email": job.customer_email,
+        "theme": THEMES.get(job.theme_id, {}).get("name", job.theme_id),
+        "job_id": job.job_id,
+    }
+    try:
+        with _LEADS_LOCK:
+            client = _tos_client()
+            try:
+                existing = client.get_object(TOS_BUCKET, LEADS_KEY).read().decode("utf-8")
+            except Exception:
+                existing = ""
+            rows = list(csv.DictReader(io.StringIO(existing))) if existing.strip() else []
+            rows.append(row)
+            buf = io.StringIO()
+            w = csv.DictWriter(buf, fieldnames=LEADS_HEADER, extrasaction="ignore")
+            w.writeheader()
+            w.writerows(rows)
+            upload_bytes_to_tos(buf.getvalue().encode("utf-8"), LEADS_KEY,
+                                content_type="text/csv")
+    except Exception:
+        pass
+
+
+def leads_csv_download_url() -> str | None:
+    """Presigned attachment URL for the customer CSV, or None if none saved yet."""
+    if DEMO_MODE or not TOS_BUCKET:
+        return None
+    try:
+        _tos_client().head_object(TOS_BUCKET, LEADS_KEY)  # raises if not present
+        return presigned_download_url(LEADS_KEY, filename="seedance_customers.csv")
+    except Exception:
+        return None
 
 
 def add_watermark(in_path: str, out_path: str) -> str:
@@ -1039,6 +1105,8 @@ def init_state():
         "photo_name": None,
         "photo_remote_url": None,
         "customer_name": "",
+        "customer_company": "",
+        "customer_title": "",
         "customer_phone": "",
         "customer_email": "",
         "theme_id": None,
@@ -1074,6 +1142,8 @@ class Job:
     customer_name: str
     customer_phone: str
     customer_email: str
+    customer_company: str = ""
+    customer_title: str = ""
     status: str = "QUEUED"          # QUEUED | RUNNING | DONE | FAILED
     step: str = "WAITING IN QUEUE"
     progress: float = 0.0
@@ -1106,6 +1176,8 @@ class Job:
                 "photo_name": self.photo_name,
                 "theme_id": self.theme_id,
                 "customer_name": self.customer_name,
+                "customer_company": self.customer_company,
+                "customer_title": self.customer_title,
                 "customer_phone": self.customer_phone,
                 "customer_email": self.customer_email,
                 "status": self.status,
@@ -1133,7 +1205,8 @@ class JobQueue:
         self.gen_semaphore = threading.Semaphore(MAX_CONCURRENT_GENERATIONS)
 
     def submit(self, photo_bytes: bytes, photo_name: str, theme_id: str,
-               customer_name: str, customer_phone: str, customer_email: str) -> str:
+               customer_name: str, customer_phone: str, customer_email: str,
+               customer_company: str = "", customer_title: str = "") -> str:
         job_id = (
             f"job-{datetime.now().strftime('%Y%m%d%H%M%S')}-{uuid.uuid4().hex[:6]}"
         )
@@ -1141,6 +1214,7 @@ class JobQueue:
             job_id=job_id, photo_bytes=photo_bytes, photo_name=photo_name,
             theme_id=theme_id, customer_name=customer_name,
             customer_phone=customer_phone, customer_email=customer_email,
+            customer_company=customer_company, customer_title=customer_title,
         )
         with self.lock:
             self.jobs[job_id] = job
@@ -1158,6 +1232,7 @@ class JobQueue:
                        if j.status in ("QUEUED", "RUNNING"))
 
     def _run(self, job: Job):
+        save_lead(job)  # capture the customer details up front (never blocks the flow)
         if DEMO_MODE:
             return self._run_demo(job)
 
@@ -1593,6 +1668,24 @@ def render_details():
                         unsafe_allow_html=True)
 
         st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+        field_label("Company")
+        company = st.text_input("company", value=st.session_state.customer_company,
+                                placeholder="e.g. BytePlus", key="company_input",
+                                label_visibility="collapsed")
+        if errs.get("company"):
+            st.markdown(f'<div class="mono" style="margin-top:6px;color:#FF6B6B">✗ {errs["company"]}</div>',
+                        unsafe_allow_html=True)
+
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
+        field_label("Job title")
+        title = st.text_input("title", value=st.session_state.customer_title,
+                              placeholder="e.g. Marketing Manager", key="title_input",
+                              label_visibility="collapsed")
+        if errs.get("title"):
+            st.markdown(f'<div class="mono" style="margin-top:6px;color:#FF6B6B">✗ {errs["title"]}</div>',
+                        unsafe_allow_html=True)
+
+        st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
         field_label("Phone number")
         phone = st.text_input("phone", value=st.session_state.customer_phone,
                               placeholder="e.g. +84 90 123 4567", key="phone_input",
@@ -1626,6 +1719,10 @@ def render_details():
                 new_errs["email"] = "Please go back and choose a world first."
             if not (name or "").strip():
                 new_errs["name"] = "Please enter your name."
+            if not (company or "").strip():
+                new_errs["company"] = "Please enter your company."
+            if not (title or "").strip():
+                new_errs["title"] = "Please enter your job title."
             if not (phone or "").strip():
                 new_errs["phone"] = "Please enter your phone number."
             elif not is_valid_phone(phone):
@@ -1637,6 +1734,8 @@ def render_details():
 
             # Persist what they typed so it survives the rerun
             st.session_state.customer_name = (name or "").strip()
+            st.session_state.customer_company = (company or "").strip()
+            st.session_state.customer_title = (title or "").strip()
             st.session_state.customer_phone = (phone or "").strip()
             st.session_state.customer_email = (email or "").strip()
 
@@ -1651,6 +1750,8 @@ def render_details():
                     photo_name=st.session_state.photo_name or "photo",
                     theme_id=st.session_state.theme_id,
                     customer_name=st.session_state.customer_name,
+                    customer_company=st.session_state.customer_company,
+                    customer_title=st.session_state.customer_title,
                     customer_phone=st.session_state.customer_phone,
                     customer_email=st.session_state.customer_email,
                 )
@@ -1980,8 +2081,20 @@ def render_gallery():
                 "(set ARK_API_KEY + TOS_* env vars).")
         return
 
-    rcol = st.columns([6, 1.4])
+    rcol = st.columns([4.6, 1.6, 1.4])
     with rcol[1]:
+        leads_url = leads_csv_download_url()
+        if leads_url:
+            st.markdown(
+                f'<a href="{leads_url}" target="_blank" style="text-decoration:none">'
+                f'<button style="width:100%;background:transparent;color:#cfc9bd;'
+                f'border:1px solid rgba(237,235,228,0.3);border-radius:6px;'
+                f'font-family:JetBrains Mono,monospace;font-size:11px;font-weight:500;'
+                f'letter-spacing:0.14em;text-transform:uppercase;padding:0.55rem 0.5rem;'
+                f'cursor:pointer;min-height:38px">⤓ Customers CSV</button></a>',
+                unsafe_allow_html=True,
+            )
+    with rcol[2]:
         refresh = st.button("↻ Refresh", key="gal_refresh", type="secondary",
                             use_container_width=True)
 
@@ -2064,7 +2177,8 @@ def render_gallery():
 
 def _reset_session():
     for k in ("step", "photo_bytes", "photo_name", "photo_remote_url",
-              "customer_name", "customer_phone", "customer_email", "theme_id",
+              "customer_name", "customer_company", "customer_title",
+              "customer_phone", "customer_email", "theme_id",
               "job_id", "error", "detail_errors"):
         st.session_state.pop(k, None)
     try:
@@ -2092,7 +2206,8 @@ def main():
     try:
         if st.query_params.get("home"):
             for k in ("step", "photo_bytes", "photo_name", "photo_remote_url",
-                      "customer_name", "customer_phone", "customer_email",
+                      "customer_name", "customer_company", "customer_title",
+                      "customer_phone", "customer_email",
                       "theme_id", "job_id", "error", "detail_errors"):
                 st.session_state.pop(k, None)
             st.query_params.clear()
