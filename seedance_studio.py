@@ -716,17 +716,6 @@ def save_lead(job) -> None:
         pass
 
 
-def leads_csv_download_url() -> str | None:
-    """Presigned attachment URL for the customer CSV, or None if none saved yet."""
-    if DEMO_MODE or not TOS_BUCKET:
-        return None
-    try:
-        _tos_client().head_object(TOS_BUCKET, LEADS_KEY)  # raises if not present
-        return presigned_download_url(LEADS_KEY, filename="seedance_customers.csv")
-    except Exception:
-        return None
-
-
 def add_watermark(in_path: str, out_path: str) -> str:
     """Burn the BytePlus logo into the bottom-right of the clip with ffmpeg.
     Falls back to the original clip if anything goes wrong (never fails a job)."""
@@ -1344,8 +1333,14 @@ class JobQueue:
                 finished_at=time.time(), email_status="SKIPPED")
 
 
+# Bump this whenever JobQueue/Job change shape, so st.cache_resource hands back
+# a FRESH queue after a deploy instead of a stale one (avoids TypeError on
+# submit() when the cached instance predates new fields). No manual reboot needed.
+JOBQUEUE_VERSION = "2026-06-09-company-title"
+
+
 @st.cache_resource
-def get_job_queue() -> JobQueue:
+def get_job_queue(version: str = JOBQUEUE_VERSION) -> JobQueue:
     return JobQueue()
 
 
@@ -2081,20 +2076,8 @@ def render_gallery():
                 "(set ARK_API_KEY + TOS_* env vars).")
         return
 
-    rcol = st.columns([4.6, 1.6, 1.4])
+    rcol = st.columns([6, 1.4])
     with rcol[1]:
-        leads_url = leads_csv_download_url()
-        if leads_url:
-            st.markdown(
-                f'<a href="{leads_url}" target="_blank" style="text-decoration:none">'
-                f'<button style="width:100%;background:transparent;color:#cfc9bd;'
-                f'border:1px solid rgba(237,235,228,0.3);border-radius:6px;'
-                f'font-family:JetBrains Mono,monospace;font-size:11px;font-weight:500;'
-                f'letter-spacing:0.14em;text-transform:uppercase;padding:0.55rem 0.5rem;'
-                f'cursor:pointer;min-height:38px">⤓ Customers CSV</button></a>',
-                unsafe_allow_html=True,
-            )
-    with rcol[2]:
         refresh = st.button("↻ Refresh", key="gal_refresh", type="secondary",
                             use_container_width=True)
 
